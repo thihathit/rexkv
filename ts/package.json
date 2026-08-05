@@ -23,7 +23,13 @@
     "napi",
     "embedded"
   ],
+  "scripts": {
+    "format": "oxfmt index.ts",
+    "typecheck": "tsc"
+  },
   "devDependencies": {
-    "@types/node": "^26.1.2"
+    "@types/node": "^26.1.2",
+    "oxfmt": "^0.62.0",
+    "typescript": "^7.0.2"
   }
 }
