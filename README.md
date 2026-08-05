@@ -1,0 +1,141 @@
+# red-kv
+
+Fast embedded KV store (redb-backed) for Bun/Node, distributed as prebuilt
+`.node` binaries. **Consuming projects never run Rust, `napi build`, or any
+CI here** — that all happens once, in this repo, ahead of time.
+
+## What this repo produces
+
+- `rust/` — the native addon source. Its own CI (`.github/workflows/release.yml`)
+  builds all 5 targets and attaches them to a GitHub Release as plain files:
+  `red-kv.darwin-arm64.node`, `red-kv.darwin-x64.node`,
+  `red-kv.linux-arm64-gnu.node`, `red-kv.linux-x64-gnu.node`,
+  `red-kv.win32-x64-msvc.node`.
+- `ts/index.ts` — the loader you actually import in your project.
+
+## Using it in your project
+
+**1. Get the prebuilt `.node` files.** Either download them from this repo's
+[Releases](../../releases) page, or fork/run the workflow yourself once —
+either way, you end up with 5 files and never touch Rust.
+
+**2. Get the loader.** Either install this repo directly with Bun (git
+dependencies work out of the box, no npm registry needed):
+
+```bash
+bun add github:YOUR_ORG/red-kv
+```
+
+or just copy `ts/index.ts` + `ts/types.ts` into your own project — it's two
+small files with zero dependencies, copying is a completely reasonable
+option if you'd rather not add a git dependency.
+
+**3. Put the `.node` files somewhere your project can reach**, e.g.
+`native/red-kv.linux-x64-gnu.node` etc.
+
+## Consumption pattern A — sidecar folder (simplest, works everywhere)
+
+Ship the `native/` folder next to your compiled SFE binary and resolve the
+right file at runtime:
+
+```ts
+import { loadRedKvFromDir } from "red-kv";
+
+const KvStore = loadRedKvFromDir("./native"); // picks the right file for this platform
+const kv = new KvStore("mydb.redb");
+kv.put(Buffer.from("hello"), Buffer.from("world"));
+```
+
+No VFS, no `--compile` asset embedding, no bundler-specific behavior. This
+is the one I'd default to unless you specifically want a single file with
+nothing shipped alongside it.
+
+## Consumption pattern B — embed into the VFS (single-file output)
+
+This is where there's a real constraint worth understanding before you
+build around it: **`with { type: "file" }` imports are resolved statically
+by the bundler at compile time** — you can't hand it a variable or a
+runtime-computed path, only a literal string. So there's no way for this
+package to expose one generic "auto-embed whichever file is right"
+function; the literal import path has to appear in *your* entrypoint code.
+
+Two ways to work with that:
+
+**B1 — one static import per target, decided by your own build script.**
+Cleanest output (only the relevant file ends up in each compiled binary),
+but requires your build script to generate or select the right entry file
+per target. Sketch:
+
+```ts
+// entry.linux-x64.ts  (generated or selected by your build script per target)
+import embedded from "./native/red-kv.linux-x64-gnu.node" with { type: "file" };
+import { loadRedKvFromEmbedded } from "red-kv";
+
+export const KvStore = loadRedKvFromEmbedded(embedded);
+```
+
+Your build script picks which `entry.<target>.ts` to bundle based on which
+`--target=bun-<platform>` you're compiling for.
+
+**B2 — import all 5 statically, branch at runtime.** Simpler code, but every
+compiled binary embeds all 5 `.node` files (they're a few MB each, so this
+is usually fine unless you're optimizing hard for binary size):
+
+```ts
+import darwinArm64 from "./native/red-kv.darwin-arm64.node" with { type: "file" };
+import darwinX64 from "./native/red-kv.darwin-x64.node" with { type: "file" };
+import linuxArm64 from "./native/red-kv.linux-arm64-gnu.node" with { type: "file" };
+import linuxX64 from "./native/red-kv.linux-x64-gnu.node" with { type: "file" };
+import win32X64 from "./native/red-kv.win32-x64-msvc.node" with { type: "file" };
+import { loadRedKvFromEmbedded, type RedKvPlatformKey } from "red-kv";
+
+const embeddedByPlatform: Record<RedKvPlatformKey, string> = {
+  "darwin-arm64": darwinArm64,
+  "darwin-x64": darwinX64,
+  "linux-arm64": linuxArm64,
+  "linux-x64": linuxX64,
+  "win32-x64": win32X64,
+};
+
+const key = `${process.platform}-${process.arch}` as RedKvPlatformKey;
+export const KvStore = loadRedKvFromEmbedded(embeddedByPlatform[key]);
+```
+
+If you want the "let my SFE build setup choose what `.node` file to
+consume" behavior with truly zero extra per-target wiring, **pattern A is
+the one that actually delivers that** — pattern B's "auto-choose" is
+inherently either a build-time decision your script makes (B1) or a
+size trade-off (B2), not something the loader can do for you at import
+time.
+
+## API
+
+```ts
+import { loadRedKvFromDir } from "red-kv";
+
+const KvStore = loadRedKvFromDir("./native");
+const kv = new KvStore("mydb.redb");
+
+kv.put(Buffer.from("key"), Buffer.from("value"));
+kv.get(Buffer.from("key")); // Buffer | null
+kv.delete(Buffer.from("key")); // boolean
+kv.putBatch([{ key: Buffer.from("a"), value: Buffer.from("1") }]); // single-txn bulk write
+```
+
+Values are raw bytes — serialize on the JS side (`JSON`, `msgpack`, etc.)
+before calling `.put()` if you need structured values.
+
+## Developing / rebuilding the native addon
+
+Only relevant if you're changing `rust/src/lib.rs` itself:
+
+```bash
+cd rust
+bun install
+bunx napi build --platform --release   # builds for your current host only
+```
+
+Cross-compiling all 5 targets locally has real OS constraints (macOS
+targets need a Mac, `win32-x64-msvc` needs Windows or `cargo-xwin`,
+`linux-arm64` needs `cross`) — that's exactly why `release.yml` exists.
+Push a `v*` tag and let CI produce all 5 for you.
