@@ -148,7 +148,7 @@ and recreated on every build, and the npm `files` whitelist ensures it's
 shipped when you publish from `ts/`.
 
 Versions are pinned for reproducible builds: `bun` is pinned in
-`rust/.bun-version`, Rust is pinned to `1.95.0` in `rust-toolchain.toml`
+`rust/.bun-version`, Rust is pinned to `1.95.0` in `rust/rust-toolchain.toml`
 (read automatically by rustup), and `rust/Cargo.lock`, `rust/bun.lock`, and
 `ts/bun.lock` are committed. CI (`release.yml`) uses the same pins, so a
 rebuild at any point produces the same output.
