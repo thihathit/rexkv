@@ -147,6 +147,12 @@ The build compiles for your current host only. It also regenerates
 and recreated on every build, and the npm `files` whitelist ensures it's
 shipped when you publish from `ts/`.
 
+Versions are pinned for reproducible builds: `bun` is pinned in
+`rust/.bun-version`, Rust is pinned to `1.95.0` in `rust-toolchain.toml`
+(read automatically by rustup), and `rust/Cargo.lock`, `rust/bun.lock`, and
+`ts/bun.lock` are committed. CI (`release.yml`) uses the same pins, so a
+rebuild at any point produces the same output.
+
 Cross-compiling all 5 targets locally has real OS constraints (macOS
 targets need a Mac, `win32-x64-msvc` needs Windows or `cargo-xwin`,
 `linux-arm64` needs `cross`) — that's exactly why `release.yml` exists.
