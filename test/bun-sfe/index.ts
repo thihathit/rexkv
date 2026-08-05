@@ -1,10 +1,10 @@
 import { createRequire } from "node:module";
 import { getKvStore } from "red-kv";
-import nativePath from "./native/red-kv.linux-x64-gnu.node" with { type: "file" };
+import nativePath from "./red-kv.node" with { type: "file" };
 
-// Build with `bun build --compile index.ts --outfile bun-sfe` then run `./bun-sfe`.
-// (Running `bun index.ts` directly fails: bun rejects `type: "file"` imports of
-// .node files outside a bundler — that's the SFE scenario, not the plain consumer one.)
+// Build with `bun run build` (build.ts embeds the artifact rust/ built) then run `./bun-sfe`.
+// Running `bun index.ts` directly fails: bun rejects `type: "file"` imports of
+// .node files outside a bundler — that's the SFE scenario, not the plain consumer one.
 const KvStore = getKvStore(createRequire(import.meta.url)(nativePath));
 const kv = new KvStore("/tmp/bun-sfe-test.redb");
 

@@ -5,7 +5,7 @@
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "target": "es2022",
-    "types": ["node"]
+    "types": ["node", "bun"]
   },
-  "include": ["index.ts", "native.d.ts"]
+  "include": ["build.ts", "index.ts", "native.d.ts"]
 }

@@ -6,12 +6,13 @@
     "red-kv": "file:../../ts"
   },
   "scripts": {
-    "build": "bun build --compile index.ts --outfile bun-sfe",
-    "format": "oxfmt index.ts native.d.ts",
+    "build": "bun build.ts",
+    "format": "oxfmt build.ts index.ts native.d.ts",
     "test": "bun run build && ./bun-sfe",
     "typecheck": "tsc"
   },
   "devDependencies": {
+    "@types/bun": "^1.2.20",
     "@types/node": "^26.1.2",
     "oxfmt": "^0.62.0",
     "typescript": "^7.0.2"
