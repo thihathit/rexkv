@@ -1,0 +1,29 @@
+{
+  "name": "red-kv",
+  "version": "0.1.0",
+  "description": "Fast embedded KV store (redb-backed) for Bun/Node, distributed as prebuilt .node binaries with no build step for consumers.",
+  "type": "module",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "exports": {
+    ".": {
+      "types": "./index.ts",
+      "default": "./index.ts"
+    }
+  },
+  "files": [
+    "index.ts",
+    "types.d.ts"
+  ],
+  "license": "MIT",
+  "keywords": [
+    "kv",
+    "store",
+    "redb",
+    "napi",
+    "embedded"
+  ],
+  "devDependencies": {
+    "@types/node": "^26.1.2"
+  }
+}

@@ -54,7 +54,7 @@ jobs:
 
       - name: Build (napi build, native host)
         if: ${{ !matrix.use-cross }}
-        run: bunx napi build --platform --release --target ${{ matrix.rust-target }}
+        run: bunx napi build --platform --release --target ${{ matrix.rust-target }} --dts ../ts/types.d.ts
 
       - name: Build (cross, for linux-arm64)
         if: matrix.use-cross

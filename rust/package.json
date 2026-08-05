@@ -16,7 +16,7 @@
     "@napi-rs/cli": "^3"
   },
   "scripts": {
-    "build": "napi build --platform --release",
-    "build:debug": "napi build --platform"
+    "build": "napi build --platform --release --dts ../ts/types.d.ts",
+    "build:debug": "napi build --platform --dts ../ts/types.d.ts"
   }
 }

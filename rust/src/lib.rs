@@ -1,6 +1,6 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, TableDefinition};
 use std::sync::Arc;
 
 const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("kv");

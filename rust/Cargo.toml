@@ -7,8 +7,8 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-napi = { version = "2", default-features = false, features = ["napi4"] }
-napi-derive = "2"
+napi = { version = "3", default-features = false, features = ["napi4"] }
+napi-derive = "3"
 redb = "2"
 
 [build-dependencies]
