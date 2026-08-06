@@ -100,7 +100,7 @@ jobs:
           path: red-kv-ts.zip
 
   release:
-    needs: build
+    needs: [build, package-library]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
