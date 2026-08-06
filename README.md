@@ -11,6 +11,10 @@ This repo ships exactly two things:
 2. **The prebuilt binaries** — platform-specific `.node` files, built by
    `.github/workflows/release.yml` and attached to GitHub [Releases](../../releases).
 
+See [API.md](./API.md) for the full API reference — the native bindings
+(`KvStore`, `KvTable`) and the TS library (`JsonTable`, `serializeJSON`,
+`deserializeJSON`).
+
 ## Contributing
 
 Only relevant if you're changing `rust/src/lib.rs` itself:
