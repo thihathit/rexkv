@@ -4,56 +4,64 @@ const KvStore = getKvStore(require("./native/red-kv.node"));
 const kv = new KvStore("/tmp/bun-sfe-build_and_run.redb");
 
 const store = kv.openTable("kv");
-store.put(Buffer.from("hello"), Buffer.from("world"));
+await store.put(Buffer.from("hello"), Buffer.from("world"));
 console.log("get:", store.get(Buffer.from("hello"))?.toString());
 
-store.putBatch([
+await store.putBatch([
   { key: Buffer.from("a"), value: Buffer.from("1") },
   { key: Buffer.from("b"), value: Buffer.from("2") },
 ]);
 console.log("batch a:", store.get(Buffer.from("a"))?.toString());
-console.log("delete b:", store.delete(Buffer.from("b")));
+console.log("delete b:", await store.delete(Buffer.from("b")));
 console.log("b after delete:", store.get(Buffer.from("b")));
 
 const users = kv.openTable("users");
-users.put(Buffer.from("alice"), Buffer.from("admin"));
+await users.put(Buffer.from("alice"), Buffer.from("admin"));
 console.log("users.get(alice):", users.get(Buffer.from("alice"))?.toString());
-console.log("remove alice:", users.remove(Buffer.from("alice")));
+console.log("remove alice:", await users.remove(Buffer.from("alice")));
 console.log("alice after remove:", users.get(Buffer.from("alice")));
 console.log("kv table untouched:", store.get(Buffer.from("hello"))?.toString());
 
 const json = new JsonTable(kv.openTable("json"));
-json.put("alice", { role: "admin" });
+await json.put("alice", { role: "admin" });
 console.log("json.get(alice):", JSON.stringify(json.get("alice")));
-json.put(Buffer.from("count"), 5);
+await json.put(Buffer.from("count"), 5);
 console.log("json.get(count):", json.get("count"));
 console.log("json.getOr(missing):", JSON.stringify(json.getOr("missing", null)));
-json.putBatch([
+await json.putBatch([
   { key: "x", value: { n: 1 } },
   { key: "y", value: [1, 2, 3] },
 ]);
 console.log("json.get(x):", JSON.stringify(json.get("x")));
-console.log("json.delete(alice):", json.delete("alice"));
+console.log("json.delete(alice):", await json.delete("alice"));
 console.log("alice after json delete:", json.get("alice"));
 
 const typed = new JsonTable<string, { role: string }>(kv.openTable("json"));
-typed.put("bob", { role: "user" });
+await typed.put("bob", { role: "user" });
 const bob: { role: string } | null = typed.get("bob");
 console.log("typed.get(bob):", JSON.stringify(bob));
 console.log("typed.getOr(missing):", JSON.stringify(typed.getOr("nope", { role: "anon" })));
 
 const events = new JsonTable<string, { at: Date }>(kv.openTable("json"));
 const eventDate = new Date("2026-01-02T03:04:05.000Z");
-events.put("event", { at: eventDate });
+await events.put("event", { at: eventDate });
 const event = events.get("event");
 console.log("date instanceof Date:", event?.at instanceof Date);
 console.log("date iso:", event?.at.toISOString());
 
 const rawKey = Buffer.from("standalone");
-kv.openTable("kv").put(rawKey, serializeJSON({ at: eventDate, n: 1 }));
-const decoded = deserializeJSON<{ at: Date; n: number }>(kv.openTable("kv").get(rawKey)!);
+const standalone = kv.openTable("kv");
+await standalone.put(rawKey, serializeJSON({ at: eventDate, n: 1 }));
+const decoded = deserializeJSON<{ at: Date; n: number }>(standalone.get(rawKey)!);
 console.log("standalone date instanceof Date:", decoded.at instanceof Date);
 console.log("standalone n:", decoded.n);
+
+const fresh = kv.openTable("never-written");
+console.log("get on never-written table:", fresh.get(Buffer.from("k")));
+console.log(
+  "getBatch on never-written table:",
+  (await fresh.getBatch([Buffer.from("k")])).map((v) => v ?? null),
+);
 console.log(
   "serializeJSON embeds metadata:",
   serializeJSON({ at: eventDate }).toString().includes('"__$p"'),
@@ -122,7 +130,18 @@ try {
 }
 console.log("__$p collision throws:", collisionThrew);
 
-kv.close();
+console.log(
+  "getBatch:",
+  (await store.getBatch([Buffer.from("a"), Buffer.from("missing")])).map(
+    (v) => v?.toString() ?? null,
+  ),
+);
+console.log(
+  "json.getBatch:",
+  JSON.stringify(await json.getBatch(["x", "missing"]), (_, v) => (v === undefined ? null : v)),
+);
+
+await kv.close();
 let closedThrows = false;
 try {
   store.get(Buffer.from("hello"));
@@ -131,6 +150,14 @@ try {
 }
 console.log("get after close throws:", closedThrows);
 
+let openClosedThrows = false;
+try {
+  kv.openTable("late");
+} catch {
+  openClosedThrows = true;
+}
+console.log("openTable after close throws:", openClosedThrows);
+
 let tableClosedThrows = false;
 try {
   users.get(Buffer.from("alice"));
@@ -138,5 +165,13 @@ try {
   tableClosedThrows = true;
 }
 console.log("table get after close throws:", tableClosedThrows);
+
+let writeAfterCloseThrew = false;
+try {
+  await store.put(Buffer.from("late"), Buffer.from("write"));
+} catch {
+  writeAfterCloseThrew = true;
+}
+console.log("write after close rejects:", writeAfterCloseThrew);
 
 console.log("BUN SFE BUILD-AND-RUN OK");

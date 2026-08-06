@@ -1,0 +1,20 @@
+{
+  "name": "functional",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "red-kv": "file:../../ts"
+  },
+  "scripts": {
+    "format": "oxfmt *.ts",
+    "test": "node --test && bun test",
+    "test:bun": "bun test",
+    "test:node": "node --test",
+    "typecheck": "tsc"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "oxfmt": "^0.62.0",
+    "typescript": "^7.0.2"
+  }
+}

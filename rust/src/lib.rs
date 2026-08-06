@@ -1,12 +1,20 @@
 use napi::bindgen_prelude::*;
+use napi::JsValue;
 use napi_derive::napi;
-use redb::{Database, TableDefinition};
+use redb::{Database, Durability, TableDefinition, TableError};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
+use std::thread;
+use tokio::sync::oneshot;
+
+/// One reply channel from a queued job back to the awaiting JS promise.
+type Reply<T> = oneshot::Sender<std::result::Result<T, String>>;
 
 /// The open database, shared by the store and every table it hands out.
 /// Set to `None` by `KvStore.close()`, which makes every later operation fail.
 struct SharedDb {
     db: Mutex<Option<Arc<Database>>>,
+    durability: Durability,
 }
 
 impl SharedDb {
@@ -17,54 +25,323 @@ impl SharedDb {
             .clone()
             .ok_or_else(|| Error::from_reason("database is closed"))
     }
+
+    fn get_string(&self) -> std::result::Result<Arc<Database>, String> {
+        self.db
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "database is closed".to_string())
+    }
 }
 
 fn to_napi_err<E: std::fmt::Display>(e: E) -> Error {
     Error::from_reason(e.to_string())
 }
 
+/// A write-side operation, applied in order by the single writer thread.
+enum Job {
+    Put {
+        table: String,
+        key: Vec<u8>,
+        value: Vec<u8>,
+        reply: Reply<()>,
+    },
+    Delete {
+        table: String,
+        key: Vec<u8>,
+        reply: Reply<bool>,
+    },
+    PutBatch {
+        table: String,
+        entries: Vec<(Vec<u8>, Vec<u8>)>,
+        reply: Reply<()>,
+    },
+    GetBatch {
+        table: String,
+        keys: Vec<Vec<u8>>,
+        reply: Reply<Vec<Option<Vec<u8>>>>,
+    },
+    Close {
+        reply: Reply<()>,
+    },
+}
+
+fn worker_put(
+    db: &Database,
+    durability: Durability,
+    table: &str,
+    key: &[u8],
+    value: &[u8],
+) -> std::result::Result<(), String> {
+    let mut txn = db.begin_write().map_err(|e| e.to_string())?;
+    txn.set_durability(durability);
+    {
+        let mut t = txn
+            .open_table(TableDefinition::<&[u8], &[u8]>::new(table))
+            .map_err(|e| e.to_string())?;
+        t.insert(key, value).map_err(|e| e.to_string())?;
+    }
+    txn.commit().map_err(|e| e.to_string())
+}
+
+fn worker_delete(
+    db: &Database,
+    durability: Durability,
+    table: &str,
+    key: &[u8],
+) -> std::result::Result<bool, String> {
+    let mut txn = db.begin_write().map_err(|e| e.to_string())?;
+    txn.set_durability(durability);
+    let existed;
+    {
+        let mut t = txn
+            .open_table(TableDefinition::<&[u8], &[u8]>::new(table))
+            .map_err(|e| e.to_string())?;
+        existed = t.remove(key).map_err(|e| e.to_string())?.is_some();
+    }
+    txn.commit().map_err(|e| e.to_string())?;
+    Ok(existed)
+}
+
+fn worker_put_batch(
+    db: &Database,
+    durability: Durability,
+    table: &str,
+    entries: &[(Vec<u8>, Vec<u8>)],
+) -> std::result::Result<(), String> {
+    let mut txn = db.begin_write().map_err(|e| e.to_string())?;
+    txn.set_durability(durability);
+    {
+        let mut t = txn
+            .open_table(TableDefinition::<&[u8], &[u8]>::new(table))
+            .map_err(|e| e.to_string())?;
+        for (key, value) in entries {
+            t.insert(key.as_slice(), value.as_slice()).map_err(|e| e.to_string())?;
+        }
+    }
+    txn.commit().map_err(|e| e.to_string())
+}
+
+fn worker_get_batch(
+    db: &Database,
+    table: &str,
+    keys: &[Vec<u8>],
+) -> std::result::Result<Vec<Option<Vec<u8>>>, String> {
+    let txn = db.begin_read().map_err(|e| e.to_string())?;
+    let t = match txn.open_table(TableDefinition::<&[u8], &[u8]>::new(table)) {
+        Ok(t) => t,
+        Err(TableError::TableDoesNotExist(_)) => return Ok(vec![None; keys.len()]),
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut out = Vec::with_capacity(keys.len());
+    for key in keys {
+        match t.get(key.as_slice()).map_err(|e| e.to_string())? {
+            Some(v) => out.push(Some(v.value().to_vec())),
+            None => out.push(None),
+        }
+    }
+    Ok(out)
+}
+
+fn writer_loop(shared: Arc<SharedDb>, rx: Receiver<Job>) {
+    let durability = shared.durability;
+    let mut closing = false;
+    while let Ok(job) = rx.recv() {
+        if closing {
+            // After Close, the writer stays alive to drain the channel and
+            // reject everything still queued, so no promise is ever left
+            // pending. It exits once the last Sender is dropped.
+            let reason = "database is closed".to_string();
+            match job {
+                Job::Put { reply, .. } => {
+                    let _ = reply.send(Err(reason));
+                }
+                Job::Delete { reply, .. } => {
+                    let _ = reply.send(Err(reason));
+                }
+                Job::PutBatch { reply, .. } => {
+                    let _ = reply.send(Err(reason));
+                }
+                Job::GetBatch { reply, .. } => {
+                    let _ = reply.send(Err(reason));
+                }
+                Job::Close { reply } => {
+                    let _ = reply.send(Err(reason));
+                }
+            }
+            continue;
+        }
+        match job {
+            Job::Put { table, key, value, reply } => {
+                let res = shared
+                    .get_string()
+                    .and_then(|db| worker_put(&db, durability, &table, &key, &value));
+                let _ = reply.send(res);
+            }
+            Job::Delete { table, key, reply } => {
+                let res = shared
+                    .get_string()
+                    .and_then(|db| worker_delete(&db, durability, &table, &key));
+                let _ = reply.send(res);
+            }
+            Job::PutBatch { table, entries, reply } => {
+                let res = shared
+                    .get_string()
+                    .and_then(|db| worker_put_batch(&db, durability, &table, &entries));
+                let _ = reply.send(res);
+            }
+            Job::GetBatch { table, keys, reply } => {
+                let res = shared.get_string().and_then(|db| worker_get_batch(&db, &table, &keys));
+                let _ = reply.send(res);
+            }
+            Job::Close { reply } => {
+                let _ = reply.send(Ok(()));
+                closing = true;
+            }
+        }
+    }
+}
+
+async fn await_reply<T>(rx: oneshot::Receiver<std::result::Result<T, String>>) -> Result<T> {
+    rx.await
+        .map_err(|_| Error::from_reason("database is closed"))?
+        .map_err(Error::from_reason)
+}
+
+/// Wrap a raw Promise from `Env::spawn_future`/`PromiseRaw::reject` in a
+/// returnable `ObjectRef`, which converts to a JS value (and releases its
+/// reference) when the napi call returns it.
+fn promise_to_js<T>(raw: PromiseRaw<'_, T>) -> Result<ObjectRef<false>> {
+    let value = raw.value();
+    Ok(Object::from_raw(value.env, value.value).create_ref::<false>()?)
+}
+
+/// Enqueue a job synchronously on the JS thread, so queued order is exactly
+/// the caller's order. Returns a Promise that settles when the writer thread
+/// replies. If the enqueue itself fails (queue full, database closed) an
+/// already-rejected Promise is returned — callers always receive a Promise,
+/// never a synchronous throw.
+fn enqueue_promise<T>(
+    env: Env,
+    reply: oneshot::Receiver<std::result::Result<T, String>>,
+    enqueue: impl FnOnce() -> Result<()>,
+) -> Result<ObjectRef<false>>
+where
+    T: 'static + Send + ToNapiValue,
+{
+    if let Err(e) = enqueue() {
+        let raw = PromiseRaw::<'_, T>::reject(&env, e)?;
+        return promise_to_js(raw);
+    }
+    let raw = env.spawn_future::<T, _>(async move { await_reply(reply).await })?;
+    promise_to_js(raw)
+}
+
+/// Durable-write policy for every write transaction.
+#[napi(string_enum)]
+pub enum KvDurability {
+    /// Nothing is fsynced; fastest, but a crash can lose commits and the
+    /// database file grows until a higher-durability commit.
+    #[napi(value = "none")]
+    None,
+    /// Commits are queued for persistence; durable "some time after" commit.
+    #[napi(value = "eventual")]
+    Eventual,
+    /// Every commit is fsynced before the promise resolves (default).
+    #[napi(value = "immediate")]
+    Immediate,
+}
+
+#[napi(object)]
+pub struct KvStoreOptions {
+    /// Fsync policy for write transactions. Defaults to `Immediate`.
+    pub durability: Option<KvDurability>,
+    /// Max number of queued write jobs before `put`/`putBatch`/`delete`
+    /// reject with a "queue is full" error (backpressure). Defaults to 1024.
+    pub max_queue: Option<u32>,
+}
+
 #[napi]
 pub struct KvStore {
     shared: Arc<SharedDb>,
+    sender: SyncSender<Job>,
+}
+
+impl KvStore {
+    fn enqueue(&self, job: Job) -> Result<()> {
+        match self.sender.try_send(job) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => Err(Error::from_reason(
+                "red-kv write queue is full; await some pending writes before issuing more",
+            )),
+            Err(TrySendError::Disconnected(_)) => Err(Error::from_reason("database is closed")),
+        }
+    }
 }
 
 #[napi]
 impl KvStore {
     /// Open (or create) a redb database file at the given path.
     #[napi(constructor)]
-    pub fn new(path: String) -> Result<Self> {
+    pub fn new(path: String, options: Option<KvStoreOptions>) -> Result<Self> {
+        let (durability, max_queue) = match options {
+            Some(o) => (
+                match o.durability {
+                    Some(KvDurability::None) => Durability::None,
+                    Some(KvDurability::Eventual) => Durability::Eventual,
+                    Some(KvDurability::Immediate) | None => Durability::Immediate,
+                },
+                o.max_queue.unwrap_or(1024) as usize,
+            ),
+            None => (Durability::Immediate, 1024),
+        };
+
         let db = Database::create(path).map_err(to_napi_err)?;
+        let shared = Arc::new(SharedDb {
+            db: Mutex::new(Some(Arc::new(db))),
+            durability,
+        });
 
-        Ok(Self {
-            shared: Arc::new(SharedDb {
-                db: Mutex::new(Some(Arc::new(db))),
-            }),
-        })
+        let (sender, receiver) = sync_channel(max_queue.max(1));
+        let worker_shared = shared.clone();
+        thread::Builder::new()
+            .name("red-kv-writer".to_string())
+            .spawn(move || writer_loop(worker_shared, receiver))
+            .map_err(to_napi_err)?;
+
+        Ok(Self { shared, sender })
     }
 
-    /// Close the database and release the file handle. Any later call on this
-    /// store — or on a table it returned — will throw "database is closed".
-    #[napi]
-    pub fn close(&self) {
-        *self.shared.db.lock().unwrap() = None;
+    /// Drain the write queue, flush, and close the database. Resolves once
+    /// every previously queued write has committed. Any later call on this
+    /// store — or on a table it returned — throws "database is closed".
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn close(&self, env: Env) -> Result<ObjectRef<false>> {
+        let (tx, rx) = oneshot::channel();
+        if let Err(e) = self.enqueue(Job::Close { reply: tx }) {
+            let raw = PromiseRaw::<'_, ()>::reject(&env, e)?;
+            return promise_to_js(raw);
+        }
+        let shared = self.shared.clone();
+        let raw = env.spawn_future::<(), _>(async move {
+            await_reply(rx).await?;
+            *shared.db.lock().unwrap() = None;
+            Ok(())
+        })?;
+        promise_to_js(raw)
     }
 
-    /// Open (or create) a named table (a redb table) and return a handle
-    /// scoped to it. Tables share the same underlying database file.
+    /// Open a named table and return a handle scoped to it. Sync — no I/O
+    /// happens here. The table itself is created lazily by the first write
+    /// to it, and reads on a never-written table return null. Tables share
+    /// the same underlying database file.
     #[napi]
     pub fn open_table(&self, name: String) -> Result<KvTable> {
-        let db = self.shared.get()?;
-
-        let txn = db.begin_write().map_err(to_napi_err)?;
-        {
-            let _ = txn
-                .open_table(TableDefinition::<&[u8], &[u8]>::new(&name))
-                .map_err(to_napi_err)?;
-        }
-        txn.commit().map_err(to_napi_err)?;
-
+        self.shared.get()?;
         Ok(KvTable {
             shared: self.shared.clone(),
+            sender: self.sender.clone(),
             name,
         })
     }
@@ -73,7 +350,20 @@ impl KvStore {
 #[napi]
 pub struct KvTable {
     shared: Arc<SharedDb>,
+    sender: SyncSender<Job>,
     name: String,
+}
+
+impl KvTable {
+    fn enqueue(&self, job: Job) -> Result<()> {
+        match self.sender.try_send(job) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => Err(Error::from_reason(
+                "red-kv write queue is full; await some pending writes before issuing more",
+            )),
+            Err(TrySendError::Disconnected(_)) => Err(Error::from_reason("database is closed")),
+        }
+    }
 }
 
 #[napi]
@@ -85,13 +375,16 @@ impl KvTable {
     }
 
     /// Fetch a value by key. Returns null if the key doesn't exist.
+    /// Sync — the hot read path.
     #[napi]
     pub fn get(&self, key: Buffer) -> Result<Option<Buffer>> {
         let db = self.shared.get()?;
         let txn = db.begin_read().map_err(to_napi_err)?;
-        let table = txn
-            .open_table(TableDefinition::<&[u8], &[u8]>::new(&self.name))
-            .map_err(to_napi_err)?;
+        let table = match txn.open_table(TableDefinition::<&[u8], &[u8]>::new(&self.name)) {
+            Ok(t) => t,
+            Err(TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(e) => return Err(to_napi_err(e)),
+        };
         let key_slice: &[u8] = &key;
 
         match table.get(key_slice).map_err(to_napi_err)? {
@@ -100,64 +393,88 @@ impl KvTable {
         }
     }
 
-    /// Insert or overwrite a key.
-    #[napi]
-    pub fn put(&self, key: Buffer, value: Buffer) -> Result<()> {
-        let db = self.shared.get()?;
-        let txn = db.begin_write().map_err(to_napi_err)?;
-        {
-            let mut table = txn
-                .open_table(TableDefinition::<&[u8], &[u8]>::new(&self.name))
-                .map_err(to_napi_err)?;
-            let key_slice: &[u8] = &key;
-            let val_slice: &[u8] = &value;
-            table.insert(key_slice, val_slice).map_err(to_napi_err)?;
-        }
-        txn.commit().map_err(to_napi_err)?;
-        Ok(())
+    /// Insert or overwrite a key, off the JS thread.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn put(&self, env: Env, key: Buffer, value: Buffer) -> Result<ObjectRef<false>> {
+        let (tx, rx) = oneshot::channel();
+        enqueue_promise(
+            env,
+            rx,
+            || {
+                self.enqueue(Job::Put {
+                    table: self.name.clone(),
+                    key: key.to_vec(),
+                    value: value.to_vec(),
+                    reply: tx,
+                })
+            },
+        )
     }
 
-    /// Delete a key. Returns true if the key existed.
-    #[napi]
-    pub fn delete(&self, key: Buffer) -> Result<bool> {
-        let db = self.shared.get()?;
-        let txn = db.begin_write().map_err(to_napi_err)?;
-        let existed;
-        {
-            let mut table = txn
-                .open_table(TableDefinition::<&[u8], &[u8]>::new(&self.name))
-                .map_err(to_napi_err)?;
-            let key_slice: &[u8] = &key;
-            existed = table.remove(key_slice).map_err(to_napi_err)?.is_some();
-        }
-        txn.commit().map_err(to_napi_err)?;
-        Ok(existed)
+    /// Delete a key. Resolves true if the key existed.
+    #[napi(ts_return_type = "Promise<boolean>")]
+    pub fn delete(&self, env: Env, key: Buffer) -> Result<ObjectRef<false>> {
+        let (tx, rx) = oneshot::channel();
+        enqueue_promise(
+            env,
+            rx,
+            || {
+                self.enqueue(Job::Delete {
+                    table: self.name.clone(),
+                    key: key.to_vec(),
+                    reply: tx,
+                })
+            },
+        )
     }
 
-    /// Delete a key. Returns true if the key existed. Alias of `delete`.
-    #[napi]
-    pub fn remove(&self, key: Buffer) -> Result<bool> {
-        self.delete(key)
+    /// Delete a key. Resolves true if the key existed. Alias of `delete`.
+    #[napi(ts_return_type = "Promise<boolean>")]
+    pub fn remove(&self, env: Env, key: Buffer) -> Result<ObjectRef<false>> {
+        self.delete(env, key)
     }
 
     /// Batch-insert multiple key/value pairs in a single transaction.
     /// Much faster than calling put() in a loop when writing many keys.
-    #[napi]
-    pub fn put_batch(&self, entries: Vec<KvEntry>) -> Result<()> {
-        let db = self.shared.get()?;
-        let txn = db.begin_write().map_err(to_napi_err)?;
-        {
-            let mut table = txn
-                .open_table(TableDefinition::<&[u8], &[u8]>::new(&self.name))
-                .map_err(to_napi_err)?;
-            for entry in entries {
-                let key_slice: &[u8] = &entry.key;
-                let val_slice: &[u8] = &entry.value;
-                table.insert(key_slice, val_slice).map_err(to_napi_err)?;
-            }
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn put_batch(&self, env: Env, entries: Vec<KvEntry>) -> Result<ObjectRef<false>> {
+        let entries: Vec<(Vec<u8>, Vec<u8>)> = entries
+            .into_iter()
+            .map(|e| (e.key.to_vec(), e.value.to_vec()))
+            .collect();
+        let (tx, rx) = oneshot::channel();
+        enqueue_promise(
+            env,
+            rx,
+            || {
+                self.enqueue(Job::PutBatch {
+                    table: self.name.clone(),
+                    entries,
+                    reply: tx,
+                })
+            },
+        )
+    }
+
+    /// Fetch many keys in one transaction. Resolves one value per key,
+    /// in order; `null` for missing keys.
+    #[napi(ts_return_type = "Promise<Array<Buffer | undefined | null>>")]
+    pub fn get_batch(&self, env: Env, keys: Vec<Buffer>) -> Result<ObjectRef<false>> {
+        let keys: Vec<Vec<u8>> = keys.into_iter().map(|k| k.to_vec()).collect();
+        let (tx, rx) = oneshot::channel();
+        if let Err(e) = self.enqueue(Job::GetBatch {
+            table: self.name.clone(),
+            keys,
+            reply: tx,
+        }) {
+            let raw = PromiseRaw::<Vec<Option<Buffer>>>::reject(&env, e)?;
+            return promise_to_js(raw);
         }
-        txn.commit().map_err(to_napi_err)?;
-        Ok(())
+        let raw = env.spawn_future::<Vec<Option<Buffer>>, _>(async move {
+            let values: Vec<Option<Vec<u8>>> = await_reply(rx).await?;
+            Ok(values.into_iter().map(|v| v.map(Buffer::from)).collect::<Vec<_>>())
+        })?;
+        promise_to_js(raw)
     }
 }
 

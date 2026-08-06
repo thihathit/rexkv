@@ -1,6 +1,6 @@
 import type { KvStore, KvTable } from "./types.d.ts";
 
-export type { KvEntry, KvStore, KvTable } from "./types.d.ts";
+export type { KvDurability, KvEntry, KvStore, KvStoreOptions, KvTable } from "./types.d.ts";
 
 /** Key accepted by `JsonTable`; strings are utf8-encoded to bytes. */
 export type JsonKey = Buffer | string;
@@ -437,6 +437,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * returns `null` both when a key is missing and when the stored value is the
  * JSON literal `null` — use `getOr` to distinguish. `get` throws a
  * `SyntaxError` if the stored bytes are not valid JSON.
+ *
+ * Writes are async — they commit off the JS thread on the store's writer
+ * queue. Reads are sync. On one table, writes resolve in call order.
  */
 export class JsonTable<K extends JsonKey = JsonKey, V = unknown> {
   /** Underlying byte table. */
@@ -452,8 +455,8 @@ export class JsonTable<K extends JsonKey = JsonKey, V = unknown> {
   }
 
   /** JSON-stringify `value` and store it under `key`. */
-  put(key: K, value: V): void {
-    this.raw.put(toKeyBytes(key), serializeJSON(value));
+  async put(key: K, value: V): Promise<void> {
+    await this.raw.put(toKeyBytes(key), serializeJSON(value));
   }
 
   /** Fetch and JSON-parse a value. Returns `null` when the key is missing or the value is JSON `null`. */
@@ -469,8 +472,8 @@ export class JsonTable<K extends JsonKey = JsonKey, V = unknown> {
   }
 
   /** JSON-encode and insert many entries in a single transaction. */
-  putBatch(entries: JsonEntry<K, V>[]): void {
-    this.raw.putBatch(
+  async putBatch(entries: JsonEntry<K, V>[]): Promise<void> {
+    await this.raw.putBatch(
       entries.map(({ key, value }) => ({
         key: toKeyBytes(key),
         value: serializeJSON(value),
@@ -478,13 +481,19 @@ export class JsonTable<K extends JsonKey = JsonKey, V = unknown> {
     );
   }
 
-  /** Delete a key. Returns `true` if the key existed. */
-  delete(key: K): boolean {
+  /** Fetch many keys in one transaction; one value per key, in order, `null` for missing keys. */
+  async getBatch(keys: K[]): Promise<(V | null)[]> {
+    const values = await this.raw.getBatch(keys.map(toKeyBytes));
+    return values.map((v) => (v == null ? null : deserializeJSON<V>(v)));
+  }
+
+  /** Delete a key. Resolves `true` if the key existed. */
+  async delete(key: K): Promise<boolean> {
     return this.raw.delete(toKeyBytes(key));
   }
 
   /** Alias of `delete`. */
-  remove(key: K): boolean {
+  async remove(key: K): Promise<boolean> {
     return this.raw.remove(toKeyBytes(key));
   }
 }
