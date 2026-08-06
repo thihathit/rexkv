@@ -90,9 +90,13 @@ jobs:
           bun install
           bunx napi build --platform --release --dts ../ts/types.d.ts
 
+      - name: Copy docs into library package
+        working-directory: ts
+        run: cp ../README.md ../API.md .
+
       - name: Zip npm library package
         working-directory: ts
-        run: zip -r ../red-kv-ts.zip package.json index.ts types.d.ts
+        run: zip -r ../red-kv-ts.zip package.json index.ts types.d.ts README.md API.md
 
       - uses: actions/upload-artifact@v4
         with:
