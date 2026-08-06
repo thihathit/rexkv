@@ -1,0 +1,21 @@
+{
+  "name": "bun-sfe-build_and_run",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "red-kv": "file:../../ts"
+  },
+  "scripts": {
+    "build": "bun run copy-native && bun build.ts",
+    "copy-native": "bun copy-native.ts",
+    "format": "oxfmt build.ts copy-native.ts index.ts",
+    "test": "bun run build && ./bun-sfe-build_and_run",
+    "typecheck": "tsc"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.20",
+    "@types/node": "^26.1.2",
+    "oxfmt": "^0.62.0",
+    "typescript": "^7.0.2"
+  }
+}
