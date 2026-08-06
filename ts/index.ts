@@ -1,6 +1,6 @@
 import type { KvStore } from "./types.d.ts";
 
-export type { KvEntry, KvStore } from "./types.d.ts";
+export type { KvEntry, KvStore, KvTable } from "./types.d.ts";
 
 /** Type of the `KvStore` constructor exported by the `.node` binding. */
 export type RedKvConstructor = typeof KvStore;

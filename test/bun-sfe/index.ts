@@ -7,15 +7,16 @@ import nativePath from "./red-kv.node" with { type: "file" };
 // .node files outside a bundler — that's the SFE scenario, not the plain consumer one.
 const KvStore = getKvStore(createRequire(import.meta.url)(nativePath));
 const kv = new KvStore("/tmp/bun-sfe-test.redb");
+const store = kv.openTable("kv");
 
-kv.put(Buffer.from("hello"), Buffer.from("world"));
-console.log("get:", kv.get(Buffer.from("hello"))?.toString());
+store.put(Buffer.from("hello"), Buffer.from("world"));
+console.log("get:", store.get(Buffer.from("hello"))?.toString());
 
-kv.putBatch([
+store.putBatch([
   { key: Buffer.from("a"), value: Buffer.from("1") },
   { key: Buffer.from("b"), value: Buffer.from("2") },
 ]);
-console.log("batch a:", kv.get(Buffer.from("a"))?.toString());
-console.log("delete b:", kv.delete(Buffer.from("b")));
-console.log("b after delete:", kv.get(Buffer.from("b")));
+console.log("batch a:", store.get(Buffer.from("a"))?.toString());
+console.log("delete b:", store.delete(Buffer.from("b")));
+console.log("b after delete:", store.get(Buffer.from("b")));
 console.log("BUN SFE TEST OK");
