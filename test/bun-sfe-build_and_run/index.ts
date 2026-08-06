@@ -51,19 +51,76 @@ console.log("date iso:", event?.at.toISOString());
 
 const rawKey = Buffer.from("standalone");
 kv.openTable("kv").put(rawKey, serializeJSON({ at: eventDate, n: 1 }));
-const decoded = deserializeJSON<{ at: Date; n: number }>(
-  kv.openTable("kv").get(rawKey)!,
-);
+const decoded = deserializeJSON<{ at: Date; n: number }>(kv.openTable("kv").get(rawKey)!);
 console.log("standalone date instanceof Date:", decoded.at instanceof Date);
 console.log("standalone n:", decoded.n);
 console.log(
   "serializeJSON embeds metadata:",
-  serializeJSON({ at: eventDate }).toString().includes('"_$properties"'),
+  serializeJSON({ at: eventDate }).toString().includes('"__$p"'),
 );
 console.log(
   "serializeJSON plain skips metadata:",
-  !serializeJSON({ a: 1 }).toString().includes('"_$properties"'),
+  !serializeJSON({ a: 1 }).toString().includes('"__$p"'),
 );
+
+const exotic = serializeJSON({
+  date: eventDate,
+  buf: Buffer.from([1, 2, 3]),
+  u8: new Uint8Array([4, 5]),
+  m: new Map([["k", "v"]]),
+  s: new Set(["a", "b"]),
+  re: /ab+c/gi,
+  big: 12345678901234567890n,
+  nan: NaN,
+  inf: Infinity,
+});
+const ex = deserializeJSON<{
+  date: Date;
+  buf: Buffer;
+  u8: Uint8Array;
+  m: Map<string, string>;
+  s: Set<string>;
+  re: RegExp;
+  big: bigint;
+  nan: number;
+  inf: number;
+}>(exotic);
+console.log(
+  "exotic roundtrip:",
+  ex.date instanceof Date,
+  Buffer.isBuffer(ex.buf),
+  ex.u8 instanceof Uint8Array && !Buffer.isBuffer(ex.u8),
+  ex.m instanceof Map && ex.m.get("k") === "v",
+  ex.s instanceof Set && ex.s.has("a"),
+  ex.re instanceof RegExp && ex.re.flags === "gi",
+  ex.big === 12345678901234567890n,
+  Number.isNaN(ex.nan),
+  ex.inf === Infinity,
+);
+
+const nested = serializeJSON({
+  root: {
+    inner: { at: eventDate },
+    deep: [{ m: new Map([["k", 1]]) }],
+  },
+});
+const nestedOut = deserializeJSON<{
+  root: { inner: { at: Date }; deep: { m: Map<string, number> }[] };
+}>(nested);
+console.log(
+  "nested per-level roundtrip:",
+  nestedOut.root.inner.at instanceof Date,
+  nestedOut.root.deep[0].m instanceof Map && nestedOut.root.deep[0].m.get("k") === 1,
+);
+console.log("nested uses per-level __$p:", nested.toString().includes('"__$p"'));
+
+let collisionThrew = false;
+try {
+  serializeJSON({ a: 1, __$p: {} });
+} catch {
+  collisionThrew = true;
+}
+console.log("__$p collision throws:", collisionThrew);
 
 kv.close();
 let closedThrows = false;

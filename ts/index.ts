@@ -38,135 +38,383 @@ export function getKvStore(module: unknown): RedKvConstructor {
 }
 
 /**
- * JSON-encode a JS value to bytes. `Date` instances are marked as
- * `{ "$date": isoString }` so `deserializeJSON` can bring them back as real
- * `Date`s. Note that `Buffer` values become `{ type: "Buffer", data: [...] }`
- * and do NOT come back as `Buffer`s.
- */
-/**
- * JSON-encode a JS value to bytes. `Date` instances round-trip back to real
- * `Date`s: their paths are recorded in a `"_$properties"` metadata key
- * (plain-object values) so no metadata is added when there are no `Date`s.
- * Note that `Buffer` values become `{ type: "Buffer", data: [...] }` and do
- * NOT come back as `Buffer`s.
+ * JSON-encode a JS value to bytes. Types JSON can't round-trip (`Date`,
+ * `Buffer`/`Uint8Array`, `NaN`, `±Infinity`, `Map`, `Set`, `RegExp`,
+ * `BigInt`) are restored on decode. Each object level that directly holds
+ * such a value carries one `"__$p"` metadata key mapping a short relative
+ * path (property name, plus array indices) to a type tag. When the root
+ * itself is not a plain object (e.g. an array of `Date`s), the value is
+ * wrapped as `{ "__$p": ..., "__$v": ... }`. Values without any of these
+ * types get no metadata and no extra work. `undefined` is dropped and `null`
+ * stays `null`, per JSON semantics. The `"__$p"` and `"__$v"` keys are
+ * reserved — an input that already contains them throws.
  */
 export function serializeJSON(value: unknown): Buffer {
-  const { replacer, props } = makeReplacer();
+  const { replacer, state } = makeDetector();
   const text = JSON.stringify(value, replacer);
 
-  if (Object.keys(props).length === 0) {
+  if (!state.found) {
     return Buffer.from(text, "utf8");
   }
 
-  if (isPlainObject(value) && !hasOwn(value, PROPERTY_MARKER)) {
-    return Buffer.from(JSON.stringify({ ...value, [PROPERTY_MARKER]: props }), "utf8");
-  }
-
-  return Buffer.from(JSON.stringify(markDates(value, new WeakSet())), "utf8");
+  const out = createTransformer().transform(value);
+  return Buffer.from(JSON.stringify(out), "utf8");
 }
 
 /**
  * Decode bytes produced by `serializeJSON` (or any JSON) back to a JS value.
- * Values whose path is listed in the `"_$properties"` metadata are revived
- * as `Date`s. Throws a `SyntaxError` if the bytes are not valid JSON.
+ * Values listed in `"__$p"` metadata are revived to their original form.
+ * Throws a `SyntaxError` if the bytes are not valid JSON.
  */
 export function deserializeJSON<T = unknown>(bytes: Buffer): T {
-  const text = bytes.toString("utf8");
-  const value = JSON.parse(text) as unknown;
-
-  if (isPlainObject(value) && isPlainObject(value[PROPERTY_MARKER])) {
-    const props = value[PROPERTY_MARKER] as Record<string, string>;
-    if (Object.keys(props).length > 0) {
-      reviveProperties(value, props);
-      return value as T;
-    }
-  }
-
-  if (text.includes('"$date"')) {
-    return JSON.parse(text, dateReviver) as T;
-  }
-
-  return value as T;
+  return reviveTree(JSON.parse(bytes.toString("utf8")) as unknown) as T;
 }
 
-const PROPERTY_MARKER = "_$properties";
+const PROPERTY_MARKER = "__$p";
+const VALUE_KEY = "__$v";
+const TAG_PATH = "";
 
 // A JSON.stringify replacer never sees a `Date`: Date.prototype.toJSON runs
 // first, turning it into an ISO string. But `this[key]` is the value BEFORE
-// toJSON, so the replacer can still spot `Date`s and record their paths while
-// stringify does its single traversal — no pre-walk or copy needed.
-function makeReplacer(): {
+// toJSON, so the replacer can still spot non-JSON types. The detector pass
+// only records whether any were found (and throws on reserved keys); the
+// transformer pass then copies the tree from the original value, attaching
+// one short `__$p` metadata key to each level that directly holds such a value.
+function makeDetector(): {
   replacer: (this: Record<string, unknown>, key: string, value: unknown) => unknown;
-  props: Record<string, string>;
+  state: { found: boolean };
 } {
   const pathFor = new WeakMap<object, string>();
-  const props: Record<string, string> = {};
+  const state = { found: false };
 
   const replacer = function (this: Record<string, unknown>, key: string, value: unknown): unknown {
     const thisObj: unknown = this;
     const parentPath =
       thisObj !== null && typeof thisObj === "object" ? (pathFor.get(thisObj as object) ?? "") : "";
-    const path =
-      key === ""
-        ? ""
-        : parentPath === ""
-          ? escapeSegment(key)
-          : `${parentPath}/${escapeSegment(key)}`;
-    if (
-      thisObj !== null &&
-      typeof thisObj === "object" &&
-      (thisObj as Record<string, unknown>)[key] instanceof Date
-    ) {
-      props[path] = "date";
-    }
-    if (value !== null && typeof value === "object") {
-      pathFor.set(value as object, path);
-    }
-    return value;
-  };
+    const path = key === "" ? "" : parentPath === "" ? key : `${parentPath}/${key}`;
 
-  return { replacer, props };
-}
-
-function reviveProperties(root: Record<string, unknown>, props: Record<string, string>): void {
-  for (const path of Object.keys(props)) {
-    if (props[path] === "date" && path !== "") {
-      const target = getByPath(root, path);
-      if (typeof target === "string") {
-        setByPath(root, path, new Date(target));
+    let result = value;
+    if (thisObj !== null && typeof thisObj === "object" && hasOwn(thisObj, key)) {
+      const original = (thisObj as Record<string, unknown>)[key];
+      if (key === PROPERTY_MARKER || key === VALUE_KEY) {
+        throw new Error(
+          `red-kv serializeJSON: key ${JSON.stringify(key)} is reserved at ${JSON.stringify(path)}`,
+        );
+      }
+      const tag = detectType(original);
+      if (tag !== null) {
+        state.found = true;
+        result = toJSON(original, tag);
       }
     }
+
+    if (result !== null && typeof result === "object") {
+      pathFor.set(result as object, path);
+    }
+    return result;
+  };
+
+  return { replacer, state };
+}
+
+// Convert a detected special value into the JSON-safe form used on disk. The
+// detector replacer runs these conversions so `JSON.stringify` never sees a
+// value it can't serialize (e.g. `BigInt`); the transformer then rewrites the
+// tree from the original value with the same forms.
+function toJSON(value: unknown, tag: string): unknown {
+  if (tag === "map") {
+    return Array.from(value as Map<unknown, unknown>);
   }
-  delete root[PROPERTY_MARKER];
-}
-
-function getByPath(root: unknown, path: string): unknown {
-  let current: unknown = root;
-  for (const segment of path.split("/")) {
-    if (current === null || typeof current !== "object") return undefined;
-    current = (current as Record<string, unknown>)[unescapeSegment(segment)];
+  if (tag === "set") {
+    return Array.from(value as Set<unknown>);
   }
-  return current;
-}
-
-function setByPath(root: Record<string, unknown>, path: string, value: unknown): void {
-  const segments = path.split("/");
-  let current: Record<string, unknown> = root;
-  for (let i = 0; i < segments.length - 1; i++) {
-    current = (current as Record<string, unknown>)[unescapeSegment(segments[i])] as Record<
-      string,
-      unknown
-    >;
+  if (tag === "regexp") {
+    const re = value as RegExp;
+    return [re.source, re.flags];
   }
-  current[unescapeSegment(segments[segments.length - 1])] = value;
+  if (tag === "bigint") {
+    return (value as bigint).toString();
+  }
+  if (tag === "buffer" || tag === "uint8array") {
+    return { data: Array.from(value as Uint8Array) };
+  }
+  if (tag === "nan" || tag === "infinity" || tag === "-infinity") {
+    return null;
+  }
+  return value;
 }
 
-function escapeSegment(segment: string): string {
-  return segment.replace(/~/g, "~0").replace(/\//g, "~1");
+// Walk the original value tree and copy-transform it into a JSON-safe form.
+// Each level (plain object or array) that directly holds a special value gets
+// one `__$p` key mapping a short relative path (bare property name, plus array
+// indices) to its type tag. Levels with no special children are returned
+// unchanged — for a plain object that means the original is reused when none
+// of its children are tagged.
+function createTransformer(): {
+  transform: (value: unknown) => unknown;
+} {
+  const transform = (value: unknown): unknown => {
+    const cache = new WeakMap<object, unknown>();
+
+    // Transform an array, tagging `path` (itself or its nested special
+    // children) on the wrapper. Used for plain arrays and for Map/Set,
+    // whose entries must be walked so nested specials are tagged too.
+    const arrayTransform = (
+      arr: unknown[],
+      path: string | null,
+      cache: WeakMap<object, unknown>,
+    ): { out: unknown; tags: Record<string, string> } => {
+      const out: unknown[] = [];
+      const tags: Record<string, string> = {};
+      cache.set(arr, out);
+      for (let i = 0; i < arr.length; i++) {
+        const { out: child, tags: childTags } = recurse(arr[i], detectType(arr[i]));
+        out[i] = child;
+        if (hasOwn(childTags, TAG_PATH)) {
+          tags[String(i)] = childTags[TAG_PATH];
+        } else {
+          for (const childPath of Object.keys(childTags)) {
+            tags[`${i}/${childPath}`] = childTags[childPath];
+          }
+        }
+      }
+      if (path !== null) {
+        tags[TAG_PATH] = path;
+      }
+      return { out: { [PROPERTY_MARKER]: tags, [VALUE_KEY]: out }, tags: {} };
+    };
+
+    const recurse = (
+      v: unknown,
+      tag: string | null,
+    ): { out: unknown; tags: Record<string, string> } => {
+      if (tag !== null) {
+        if (typeof v === "bigint") {
+          return { out: v.toString(), tags: { [TAG_PATH]: "bigint" } };
+        }
+        if (typeof v === "number") {
+          return {
+            out: v,
+            tags: {
+              [TAG_PATH]: Number.isNaN(v) ? "nan" : v === Infinity ? "infinity" : "-infinity",
+            },
+          };
+        }
+        if (v instanceof Date) {
+          return { out: v.toISOString(), tags: { [TAG_PATH]: "date" } };
+        }
+        if (v instanceof Map) {
+          return arrayTransform(Array.from(v), "map", cache);
+        }
+        if (v instanceof Set) {
+          return arrayTransform(Array.from(v), "set", cache);
+        }
+        if (v instanceof RegExp) {
+          return { out: [v.source, v.flags], tags: { [TAG_PATH]: "regexp" } };
+        }
+        if (v instanceof Uint8Array) {
+          return {
+            out: { data: Array.from(v) },
+            tags: { [TAG_PATH]: Buffer.isBuffer(v) ? "buffer" : "uint8array" },
+          };
+        }
+      }
+
+      if (v === null || typeof v !== "object") {
+        return { out: v, tags: {} };
+      }
+
+      const cached = cache.get(v);
+      if (cached !== undefined) {
+        return { out: cached, tags: tag === null ? {} : { [TAG_PATH]: tag } };
+      }
+
+      if (isPlainObject(v)) {
+        const out: Record<string, unknown> = {};
+        const tags: Record<string, string> = {};
+        cache.set(v, out);
+        for (const key of Object.keys(v)) {
+          const { out: child, tags: childTags } = recurse(v[key], detectType(v[key]));
+          out[key] = child;
+          if (hasOwn(childTags, TAG_PATH)) {
+            tags[key] = childTags[TAG_PATH];
+          } else {
+            for (const childPath of Object.keys(childTags)) {
+              tags[`${key}/${childPath}`] = childTags[childPath];
+            }
+          }
+        }
+        if (Object.keys(tags).length > 0) {
+          out[PROPERTY_MARKER] = tags;
+        }
+        return { out, tags: tag === null ? {} : { [TAG_PATH]: tag } };
+      }
+
+      if (Array.isArray(v)) {
+        return arrayTransform(v, tag, cache);
+      }
+
+      return { out: v, tags: tag === null ? {} : { [TAG_PATH]: tag } };
+    };
+
+    const { out, tags } = recurse(value, null);
+    if (isPlainObject(value) && !hasOwn(value, PROPERTY_MARKER)) {
+      return out;
+    }
+    return { [PROPERTY_MARKER]: tags, [VALUE_KEY]: out };
+  };
+
+  return { transform };
 }
 
-function unescapeSegment(segment: string): string {
-  return segment.replace(/~1/g, "/").replace(/~0/g, "~");
+function detectType(value: unknown): string | null {
+  if (value instanceof Date) return "date";
+  if (value instanceof Map) return "map";
+  if (value instanceof Set) return "set";
+  if (value instanceof RegExp) return "regexp";
+  if (typeof value === "bigint") return "bigint";
+  if (typeof value === "number") {
+    if (Number.isNaN(value)) return "nan";
+    if (value === Infinity) return "infinity";
+    if (value === -Infinity) return "-infinity";
+  }
+  if (Buffer.isBuffer(value)) return "buffer";
+  if (value instanceof Uint8Array) return "uint8array";
+  return null;
+}
+
+function reviveTree(node: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
+  if (node === null || typeof node !== "object") return node;
+
+  if (
+    hasOwn(node, PROPERTY_MARKER) &&
+    hasOwn(node, VALUE_KEY) &&
+    typeof (node as Record<string, unknown>)[PROPERTY_MARKER] === "object" &&
+    (node as Record<string, unknown>)[PROPERTY_MARKER] !== null
+  ) {
+    const props = (node as Record<string, unknown>)[PROPERTY_MARKER] as Record<string, string>;
+    const inner = reviveTree((node as Record<string, unknown>)[VALUE_KEY], seen);
+    const replaced = reviveAtPaths(inner, props);
+    return replaced === TAG_PATH ? inner : replaced;
+  }
+
+  if (hasOwn(node, PROPERTY_MARKER)) {
+    if (seen.has(node)) return node;
+    seen.add(node);
+
+    const props = (node as Record<string, unknown>)[PROPERTY_MARKER];
+    if (props === null || typeof props !== "object") {
+      delete (node as Record<string, unknown>)[PROPERTY_MARKER];
+      return node;
+    }
+
+    for (const key of Object.keys(node as Record<string, unknown>)) {
+      if (key === PROPERTY_MARKER) continue;
+      (node as Record<string, unknown>)[key] = reviveTree(
+        (node as Record<string, unknown>)[key],
+        seen,
+      );
+    }
+    reviveAtPaths(node, props as Record<string, string>);
+    delete (node as Record<string, unknown>)[PROPERTY_MARKER];
+    return node;
+  }
+
+  if (Array.isArray(node)) {
+    if (seen.has(node)) return node;
+    seen.add(node);
+    for (let i = 0; i < node.length; i++) {
+      node[i] = reviveTree(node[i], seen);
+    }
+    return node;
+  }
+
+  if (isPlainObject(node)) {
+    if (seen.has(node)) return node;
+    seen.add(node);
+    for (const key of Object.keys(node)) {
+      node[key] = reviveTree(node[key], seen);
+    }
+  }
+
+  return node;
+}
+
+// Apply one level's `__$p` tag map: for each path, walk down (each segment is
+// a bare property name or array index) and rebuild the tagged value. Deeper
+// levels were already revived by `reviveTree`, so the tagged node's contents
+// are fully restored before it is rewrapped. Returns a replacement value when
+// the empty-path tag (the level itself) was revived, or a sentinel otherwise.
+function reviveAtPaths(node: unknown, props: Record<string, string>): unknown {
+  let replaced: unknown = TAG_PATH;
+  const paths = Object.keys(props).sort((a, b) => b.split("/").length - a.split("/").length);
+  for (const path of paths) {
+    const tag = props[path];
+    let current: unknown = node;
+    if (path === TAG_PATH) {
+      const next = reviveTypeAtPath(node, path, tag, current);
+      if (next !== TAG_PATH) replaced = next;
+      continue;
+    }
+    for (const segment of path.split("/")) {
+      if (current === null || typeof current !== "object") {
+        current = undefined;
+        break;
+      }
+      current = (current as Record<string, unknown>)[segment];
+    }
+    reviveTypeAtPath(node, path, tag, current);
+  }
+  return replaced;
+}
+
+function reviveTypeAtPath(root: unknown, path: string, tag: string, value: unknown): unknown {
+  const set = (next: unknown): unknown => {
+    if (path === TAG_PATH) {
+      return next;
+    }
+    const segments = path.split("/");
+    let current: unknown = root;
+    for (let i = 0; i < segments.length - 1; i++) {
+      if (current === null || typeof current !== "object") return TAG_PATH;
+      current = (current as Record<string, unknown>)[segments[i]];
+    }
+    if (current !== null && typeof current === "object") {
+      (current as Record<string, unknown>)[segments[segments.length - 1]] = next;
+    }
+    return TAG_PATH;
+  };
+
+  let result: unknown = TAG_PATH;
+  if (tag === "date") {
+    if (typeof value === "string") result = set(new Date(value));
+  } else if (tag === "buffer" || tag === "uint8array") {
+    if (
+      value !== null &&
+      typeof value === "object" &&
+      Array.isArray((value as { data?: unknown }).data)
+    ) {
+      const data = (value as { data: number[] }).data;
+      result = set(tag === "buffer" ? Buffer.from(data) : Uint8Array.from(data));
+    }
+  } else if (tag === "map") {
+    if (Array.isArray(value)) result = set(new Map(value as [unknown, unknown][]));
+  } else if (tag === "set") {
+    if (Array.isArray(value)) result = set(new Set(value));
+  } else if (tag === "regexp") {
+    if (Array.isArray(value) && typeof value[0] === "string" && typeof value[1] === "string") {
+      result = set(new RegExp(value[0], value[1]));
+    }
+  } else if (tag === "bigint") {
+    if (typeof value === "string") result = set(BigInt(value));
+  } else if (tag === "nan") {
+    result = set(NaN);
+  } else if (tag === "infinity") {
+    result = set(Infinity);
+  } else if (tag === "-infinity") {
+    result = set(-Infinity);
+  }
+  return result;
 }
 
 function hasOwn(value: object, key: string): boolean {
@@ -179,57 +427,16 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null;
 }
 
-// Fallback for roots that can't carry `"_$properties"` (arrays, `Date`s,
-// objects that already use that key): inline `{ "$date": iso }` markers.
-function markDates(value: unknown, seen: WeakSet<object>): unknown {
-  if (value instanceof Date) {
-    return { $date: value.toISOString() };
-  }
-  if (Array.isArray(value)) {
-    if (seen.has(value)) return value;
-    seen.add(value);
-    const out: unknown[] = new Array(value.length);
-    for (let i = 0; i < value.length; i++) {
-      out[i] = markDates(value[i], seen);
-    }
-    seen.delete(value);
-    return out;
-  }
-  if (isPlainObject(value)) {
-    if (seen.has(value)) return value;
-    seen.add(value);
-    const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value)) {
-      out[key] = markDates(value[key], seen);
-    }
-    seen.delete(value);
-    return out;
-  }
-  return value;
-}
-
-function dateReviver(key: string, value: unknown): unknown {
-  if (
-    value !== null &&
-    typeof value === "object" &&
-    Object.keys(value).length === 1 &&
-    typeof (value as Record<string, unknown>).$date === "string"
-  ) {
-    return new Date((value as { $date: string }).$date);
-  }
-  return value;
-}
-
 /**
  * JSON de/serializer over a byte `KvTable`.
  *
  * `K` is the key type (`Buffer`, `string`, or a union of both) and `V` the
  * value type; `get`/`getOr` return `V` (or `V | null`) accordingly. Values
- * round-trip through `serializeJSON`/`deserializeJSON`, so `Date`s survive;
- * string keys are utf8-encoded. `get` returns `null` both when a key is
- * missing and when the stored value is the JSON literal `null` — use `getOr`
- * to distinguish. `get` throws a `SyntaxError` if the stored bytes are not
- * valid JSON.
+ * round-trip through `serializeJSON`/`deserializeJSON`, so `Date`s, `Buffer`s
+ * and other non-JSON types survive; string keys are utf8-encoded. `get`
+ * returns `null` both when a key is missing and when the stored value is the
+ * JSON literal `null` — use `getOr` to distinguish. `get` throws a
+ * `SyntaxError` if the stored bytes are not valid JSON.
  */
 export class JsonTable<K extends JsonKey = JsonKey, V = unknown> {
   /** Underlying byte table. */
