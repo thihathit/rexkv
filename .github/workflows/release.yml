@@ -70,6 +70,35 @@ jobs:
           name: ${{ matrix.artifact }}
           path: rust/${{ matrix.artifact }}
 
+  package-library:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: rust/.bun-version
+
+      - name: Build (regenerate ts/types.d.ts)
+        working-directory: rust
+        run: |
+          bun install
+          bunx napi build --platform --release --dts ../ts/types.d.ts
+
+      - name: Zip npm library package
+        working-directory: ts
+        run: zip -r ../red-kv-ts.zip package.json index.ts types.d.ts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ts-package
+          path: red-kv-ts.zip
+
   release:
     needs: build
     runs-on: ubuntu-latest
@@ -82,4 +111,4 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*.node
+          files: artifacts/*
