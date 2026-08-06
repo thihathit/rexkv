@@ -88,6 +88,7 @@ function makeDetector(): {
   const state = { found: false };
 
   const replacer = function (this: Record<string, unknown>, key: string, value: unknown): unknown {
+    // oxlint-disable-next-line no-this-alias -- replacer `this` is the holder object
     const thisObj: unknown = this;
     const parentPath =
       thisObj !== null && typeof thisObj === "object" ? (pathFor.get(thisObj as object) ?? "") : "";
@@ -116,7 +117,6 @@ function makeDetector(): {
 
   return { replacer, state };
 }
-
 // Convert a detected special value into the JSON-safe form used on disk. The
 // detector replacer runs these conversions so `JSON.stringify` never sees a
 // value it can't serialize (e.g. `BigInt`); the transformer then rewrites the
