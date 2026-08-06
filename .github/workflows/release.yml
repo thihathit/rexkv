@@ -94,6 +94,13 @@ jobs:
         working-directory: ts
         run: cp ../README.md ../API.md .
 
+      - name: Sync version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: ts
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          sed -i "s/\"version\": \".*\"/\"version\": \"$version\"/" package.json
+
       - name: Zip npm library package
         working-directory: ts
         run: zip -r ../red-kv-ts.zip package.json index.ts types.d.ts README.md API.md

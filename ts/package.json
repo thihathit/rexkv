@@ -1,7 +1,7 @@
 {
   "name": "red-kv",
-  "version": "0.1.0",
-  "description": "Fast embedded KV store (redb-backed) for Bun/Node, distributed as prebuilt .node binaries with no build step for consumers.",
+  "version": "0.0.0",
+  "description": "Fast embedded KV store for Bun/Node, distributed as prebuilt .node binaries with no build step for consumers.",
   "type": "module",
   "main": "./index.ts",
   "types": "./index.ts",
@@ -16,6 +16,7 @@
     "types.d.ts"
   ],
   "license": "MIT",
+  "author": "Thiha Thit",
   "keywords": [
     "kv",
     "store",
@@ -23,6 +24,10 @@
     "napi",
     "embedded"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thihathit/red-kv.git"
+  },
   "scripts": {
     "format": "oxfmt index.ts",
     "lint": "oxlint index.ts",
