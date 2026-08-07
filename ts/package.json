@@ -2,6 +2,24 @@
   "name": "rexkv",
   "version": "0.0.0",
   "description": "Fast embedded KV store for Bun/Node, distributed as prebuilt .node binaries with no build step for consumers.",
+  "keywords": [
+    "embedded",
+    "kv",
+    "napi",
+    "redb",
+    "store"
+  ],
+  "license": "MIT",
+  "author": "Thiha Thit",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thihathit/rexkv.git"
+  },
+  "files": [
+    "index.ts",
+    "types.d.ts",
+    "API.md"
+  ],
   "type": "module",
   "main": "./index.ts",
   "types": "./index.ts",
@@ -11,26 +29,9 @@
       "default": "./index.ts"
     }
   },
-  "files": [
-    "index.ts",
-    "types.d.ts"
-  ],
-  "license": "MIT",
-  "author": "Thiha Thit",
-  "keywords": [
-    "kv",
-    "store",
-    "redb",
-    "napi",
-    "embedded"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/thihathit/rexkv.git"
-  },
   "scripts": {
-    "format": "oxfmt index.ts",
-    "lint": "oxlint index.ts",
+    "format": "oxfmt",
+    "lint": "oxlint",
     "typecheck": "tsc"
   },
   "devDependencies": {
