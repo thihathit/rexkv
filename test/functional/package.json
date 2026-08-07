@@ -2,15 +2,15 @@
   "name": "functional",
   "private": true,
   "type": "module",
-  "dependencies": {
-    "rexkv": "file:../../ts"
-  },
   "scripts": {
-    "format": "oxfmt *.ts",
+    "format": "oxfmt",
     "test": "node --test && bun test",
     "test:bun": "bun test",
     "test:node": "node --test",
     "typecheck": "tsc"
+  },
+  "dependencies": {
+    "rexkv": "file:../../ts"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",

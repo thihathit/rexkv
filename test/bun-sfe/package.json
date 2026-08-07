@@ -2,14 +2,14 @@
   "name": "bun-sfe",
   "private": true,
   "type": "module",
-  "dependencies": {
-    "rexkv": "file:../../ts"
-  },
   "scripts": {
     "build": "bun build.ts",
-    "format": "oxfmt build.ts index.ts native.d.ts",
+    "format": "oxfmt",
     "test": "bun run build && ./bun-sfe",
     "typecheck": "tsc"
+  },
+  "dependencies": {
+    "rexkv": "file:../../ts"
   },
   "devDependencies": {
     "@types/bun": "^1.2.20",

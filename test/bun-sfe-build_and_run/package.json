@@ -2,15 +2,15 @@
   "name": "bun-sfe-build_and_run",
   "private": true,
   "type": "module",
-  "dependencies": {
-    "rexkv": "file:../../ts"
-  },
   "scripts": {
     "build": "bun run copy-native && bun build.ts",
     "copy-native": "bun copy-native.ts",
-    "format": "oxfmt build.ts copy-native.ts index.ts",
+    "format": "oxfmt",
     "test": "bun run build && ./bun-sfe-build_and_run",
     "typecheck": "tsc"
+  },
+  "dependencies": {
+    "rexkv": "file:../../ts"
   },
   "devDependencies": {
     "@types/bun": "^1.2.20",
