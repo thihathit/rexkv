@@ -1,14 +1,14 @@
-# red-kv API
+# rexkv API
 
-red-kv is two layers:
+rexkv is two layers:
 
 - **Native (Rust + redb)** — the `.node` addon. Bytes in / bytes out; serialization (JSON etc.) is the caller's job.
-- **TS library (`ts/`)** — a small source-only npm package (`red-kv`) layered on the native bindings: `JsonTable`, the JSON serializer, and helpers.
+- **TS library (`ts/`)** — a small source-only npm package (`rexkv`) layered on the native bindings: `JsonTable`, the JSON serializer, and helpers.
 
 ```
                 ┌──────────────────────┐
   your app  ──▶ │  TS library (ts/)    │   JsonTable, serializeJSON,
-                │  red-kv npm package  │   deserializeJSON, getKvStore
+                │  rexkv npm package  │   deserializeJSON, getKvStore
                 └──────────┬───────────┘
                            │  Buffer keys/values
                 ┌──────────▼───────────┐
@@ -23,7 +23,7 @@ red-kv is two layers:
 
 ## Design decisions
 
-red-kv dictates one mode per operation — there is no `put` **and** `putAsync`. The split is by cost, tuned so the JS event loop never tanks:
+rexkv dictates one mode per operation — there is no `put` **and** `putAsync`. The split is by cost, tuned so the JS event loop never tanks:
 
 - **Sync — the hot path.** Operations that are cheap and that tight loops depend on: single-key reads (`get`), structural calls (`openTable`, `name`). `openTable` is sync *and* does no I/O — it just returns a handle; the table is created lazily by the first write to it, and reads on a never-written table return `null`. Reads don't fsync and don't take redb's write lock, so they're safe on the JS thread.
 - **Async — everything that writes or scales.** `put`, `putBatch`, `delete`, `remove`, and bulk reads (`getBatch`, `iterate`). These commit to disk and can block for unbounded time, so they run on worker threads and resolve via Promise. The event loop stays responsive during fsync.
@@ -86,13 +86,13 @@ interface KvEntry { key: Buffer; value: Buffer }
 
 ---
 
-## Part 2 — TS library (`ts/`, npm package `red-kv`)
+## Part 2 — TS library (`ts/`, npm package `rexkv`)
 
 Source-only package (`files: ["index.ts", "types.d.ts"]`); re-exports the native types so one import covers both layers:
 
 ```ts
-import { JsonTable, getKvStore } from "red-kv";
-const KvStore = getKvStore(require("./red-kv.linux-x64-gnu.node"));
+import { JsonTable, getKvStore } from "rexkv";
+const KvStore = getKvStore(require("./rexkv.linux-x64-gnu.node"));
 ```
 
 | Member | Signature | Description |

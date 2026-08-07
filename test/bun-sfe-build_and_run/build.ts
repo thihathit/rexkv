@@ -4,10 +4,10 @@ import { fileURLToPath } from "node:url";
 import { build } from "bun";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const native = path.join(here, "native", "red-kv.node");
+const native = path.join(here, "native", "rexkv.node");
 
 if (!existsSync(native)) {
-  console.error("missing native/red-kv.node — run `bun run copy-native`");
+  console.error("missing native/rexkv.node — run `bun run copy-native`");
   process.exit(1);
 }
 

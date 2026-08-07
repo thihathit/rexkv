@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { KvStore, tempDbPath } from "./native.ts";
-import type { KvStoreOptions } from "red-kv";
+import type { KvStoreOptions } from "rexkv";
 
 test("full write queue rejects with queue-is-full instead of growing", async () => {
   const kv = new KvStore(tempDbPath(), { maxQueue: 1 } satisfies KvStoreOptions);

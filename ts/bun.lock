@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "red-kv",
+      "name": "rexkv",
       "devDependencies": {
         "@types/node": "^26.1.2",
         "oxfmt": "^0.62.0",

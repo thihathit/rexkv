@@ -273,7 +273,7 @@ impl KvStore {
         match self.sender.try_send(job) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err(Error::from_reason(
-                "red-kv write queue is full; await some pending writes before issuing more",
+                "rexkv write queue is full; await some pending writes before issuing more",
             )),
             Err(TrySendError::Disconnected(_)) => Err(Error::from_reason("database is closed")),
         }
@@ -306,7 +306,7 @@ impl KvStore {
         let (sender, receiver) = sync_channel(max_queue.max(1));
         let worker_shared = shared.clone();
         thread::Builder::new()
-            .name("red-kv-writer".to_string())
+            .name("rexkv-writer".to_string())
             .spawn(move || writer_loop(worker_shared, receiver))
             .map_err(to_napi_err)?;
 
@@ -359,7 +359,7 @@ impl KvTable {
         match self.sender.try_send(job) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err(Error::from_reason(
-                "red-kv write queue is full; await some pending writes before issuing more",
+                "rexkv write queue is full; await some pending writes before issuing more",
             )),
             Err(TrySendError::Disconnected(_)) => Err(Error::from_reason("database is closed")),
         }

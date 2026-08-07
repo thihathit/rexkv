@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deserializeJSON, JsonTable, serializeJSON } from "red-kv";
+import { deserializeJSON, JsonTable, serializeJSON } from "rexkv";
 import { KvStore, tempDbPath } from "./native.ts";
 
 test("JsonTable round-trips non-JSON types", async () => {

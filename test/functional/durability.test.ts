@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { KvStore, tempDbPath } from "./native.ts";
-import type { KvDurability, KvStoreOptions } from "red-kv";
+import type { KvDurability, KvStoreOptions } from "rexkv";
 
 for (const durability of ["immediate", "eventual", "none"] as KvDurability[]) {
   test(`durability "${durability}": write commits and reads back`, async () => {

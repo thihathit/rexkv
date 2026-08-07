@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "red-kv": "file:../../ts"
+    "rexkv": "file:../../ts"
   },
   "scripts": {
     "build": "bun build.ts",

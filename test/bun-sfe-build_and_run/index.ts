@@ -1,6 +1,6 @@
-import { deserializeJSON, getKvStore, JsonTable, serializeJSON } from "red-kv";
+import { deserializeJSON, getKvStore, JsonTable, serializeJSON } from "rexkv";
 
-const KvStore = getKvStore(require("./native/red-kv.node"));
+const KvStore = getKvStore(require("./native/rexkv.node"));
 const kv = new KvStore("/tmp/bun-sfe-build_and_run.redb");
 
 const store = kv.openTable("kv");

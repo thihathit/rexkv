@@ -17,13 +17,13 @@ const result = await build({
   compile: { outfile: "bun-sfe" },
   plugins: [
     {
-      name: "red-kv-native",
+      name: "rexkv-native",
       setup(build) {
         build.onResolve({ filter: /\.node$/ }, () => {
           const native = readdirSync(rustDir).find((f) => f.endsWith(".node"))!;
-          return { path: path.join(rustDir, native), namespace: "redkv" };
+          return { path: path.join(rustDir, native), namespace: "rexkv" };
         });
-        build.onLoad({ filter: /.*/, namespace: "redkv" }, async (args) => ({
+        build.onLoad({ filter: /.*/, namespace: "rexkv" }, async (args) => ({
           loader: "file",
           contents: new Uint8Array(await Bun.file(args.path).arrayBuffer()),
         }));

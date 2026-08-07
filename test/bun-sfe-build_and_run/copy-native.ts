@@ -12,7 +12,7 @@ if (!readdirSync(rustDir).some((f) => f.endsWith(".node"))) {
 }
 
 const artifact = readdirSync(rustDir).find((f) => f.endsWith(".node"))!;
-const out = path.join(here, "native", "red-kv.node");
+const out = path.join(here, "native", "rexkv.node");
 mkdirSync(path.dirname(out), { recursive: true });
 copyFileSync(path.join(rustDir, artifact), out);
-console.log(`copied rust/${artifact} -> native/red-kv.node`);
+console.log(`copied rust/${artifact} -> native/rexkv.node`);

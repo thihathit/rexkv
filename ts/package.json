@@ -1,5 +1,5 @@
 {
-  "name": "red-kv",
+  "name": "rexkv",
   "version": "0.0.0",
   "description": "Fast embedded KV store for Bun/Node, distributed as prebuilt .node binaries with no build step for consumers.",
   "type": "module",
@@ -26,7 +26,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/thihathit/red-kv.git"
+    "url": "git+https://github.com/thihathit/rexkv.git"
   },
   "scripts": {
     "format": "oxfmt index.ts",

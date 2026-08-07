@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "red-kv-native",
+      "name": "rexkv-native",
       "devDependencies": {
         "@napi-rs/cli": "^3",
       },

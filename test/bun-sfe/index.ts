@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
-import { getKvStore } from "red-kv";
-import nativePath from "./red-kv.node" with { type: "file" };
+import { getKvStore } from "rexkv";
+import nativePath from "./rexkv.node" with { type: "file" };
 
 // Build with `bun run build` (build.ts embeds the artifact rust/ built) then run `./bun-sfe`.
 // Running `bun index.ts` directly fails: bun rejects `type: "file"` imports of

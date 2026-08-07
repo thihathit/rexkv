@@ -12,10 +12,10 @@ export interface JsonEntry<K extends JsonKey = JsonKey, V = unknown> {
 }
 
 /** Type of the `KvStore` constructor exported by the `.node` binding. */
-export type RedKvConstructor = typeof KvStore;
+export type RexkvConstructor = typeof KvStore;
 
 /**
- * Unwrap the `KvStore` constructor from a loaded red-kv `.node` module.
+ * Unwrap the `KvStore` constructor from a loaded rexkv `.node` module.
  *
  * The `.node` file is loaded by the consuming project, in whatever way
  * fits their setup — `createRequire`, Bun's native `import`, a bundler
@@ -23,15 +23,15 @@ export type RedKvConstructor = typeof KvStore;
  *
  * ```ts
  * import { createRequire } from "node:module";
- * const mod = createRequire(import.meta.url)("./red-kv.linux-x64-gnu.node");
+ * const mod = createRequire(import.meta.url)("./rexkv.linux-x64-gnu.node");
  * const KvStore = getKvStore(mod);
  * ```
  */
-export function getKvStore(module: unknown): RedKvConstructor {
-  const native = module as { KvStore?: RedKvConstructor };
+export function getKvStore(module: unknown): RexkvConstructor {
+  const native = module as { KvStore?: RexkvConstructor };
 
   if (!native.KvStore) {
-    throw new Error("red-kv: loaded module did not export a KvStore binding");
+    throw new Error("rexkv: loaded module did not export a KvStore binding");
   }
 
   return native.KvStore;
@@ -99,7 +99,7 @@ function makeDetector(): {
       const original = (thisObj as Record<string, unknown>)[key];
       if (key === PROPERTY_MARKER || key === VALUE_KEY) {
         throw new Error(
-          `red-kv serializeJSON: key ${JSON.stringify(key)} is reserved at ${JSON.stringify(path)}`,
+          `rexkv serializeJSON: key ${JSON.stringify(key)} is reserved at ${JSON.stringify(path)}`,
         );
       }
       const tag = detectType(original);

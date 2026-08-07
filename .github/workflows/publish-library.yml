@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Git tag (release) whose red-kv-ts.zip asset to publish"
+        description: "Git tag (release) whose rexkv-ts.zip asset to publish"
         required: true
 
 jobs:
@@ -20,12 +20,12 @@ jobs:
       - name: Download release asset
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release download "${{ inputs.tag }}" --repo "$GITHUB_REPOSITORY" --pattern "red-kv-ts.zip" --dir package
+        run: gh release download "${{ inputs.tag }}" --repo "$GITHUB_REPOSITORY" --pattern "rexkv-ts.zip" --dir package
 
       - name: Publish to npm
         working-directory: package
         env:
           NODE_AUTH_TOKEN: ${{secrets.NPM_ACCESS_TOKEN}}
         run: |
-          unzip -o red-kv-ts.zip
+          unzip -o rexkv-ts.zip
           npm publish

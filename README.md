@@ -1,4 +1,4 @@
-# Red KV
+# Rex KV
 
 Fast embedded KV store (powered by [redb](https://redb.org)) for Bun/Node, distributed as prebuilt `.node` binaries.
 Consuming projects never run Rust or `napi build`. Everything is compiled once, in this repo, ahead of time.

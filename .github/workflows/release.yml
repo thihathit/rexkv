@@ -14,24 +14,24 @@ jobs:
         include:
           - host: macos-latest
             rust-target: x86_64-apple-darwin
-            artifact: red-kv.darwin-x64.node
+            artifact: rexkv.darwin-x64.node
 
           - host: macos-latest
             rust-target: aarch64-apple-darwin
-            artifact: red-kv.darwin-arm64.node
+            artifact: rexkv.darwin-arm64.node
 
           - host: ubuntu-latest
             rust-target: x86_64-unknown-linux-gnu
-            artifact: red-kv.linux-x64-gnu.node
+            artifact: rexkv.linux-x64-gnu.node
 
           - host: ubuntu-latest
             rust-target: aarch64-unknown-linux-gnu
-            artifact: red-kv.linux-arm64-gnu.node
+            artifact: rexkv.linux-arm64-gnu.node
             use-cross: true
 
           - host: windows-latest
             rust-target: x86_64-pc-windows-msvc
-            artifact: red-kv.win32-x64-msvc.node
+            artifact: rexkv.win32-x64-msvc.node
 
     runs-on: ${{ matrix.host }}
     defaults:
@@ -63,7 +63,7 @@ jobs:
         if: matrix.use-cross
         run: |
           cross build --release --target ${{ matrix.rust-target }}
-          cp target/${{ matrix.rust-target }}/release/libred_kv.so ./${{ matrix.artifact }}
+          cp target/${{ matrix.rust-target }}/release/librexkv.so ./${{ matrix.artifact }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -103,12 +103,12 @@ jobs:
 
       - name: Zip npm library package
         working-directory: ts
-        run: zip -r ../red-kv-ts.zip package.json index.ts types.d.ts README.md API.md
+        run: zip -r ../rexkv-ts.zip package.json index.ts types.d.ts README.md API.md
 
       - uses: actions/upload-artifact@v4
         with:
           name: ts-package
-          path: red-kv-ts.zip
+          path: rexkv-ts.zip
 
   release:
     needs: [build, package-library]
