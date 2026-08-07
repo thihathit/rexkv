@@ -15,6 +15,12 @@ See [API.md](./API.md) for the full API reference — the native bindings
 (`KvStore`, `KvTable`) and the TS library (`JsonTable`, `serializeJSON`,
 `deserializeJSON`).
 
+## Benchmarks
+
+`benchmark/` compares rexkv against [`bun:lmdb`](https://bun.com/docs/api/lmdb)
+and [`bun:sqlite`](https://bun.com/docs/api/sqlite) on sequential and batched
+writes and reads. `cd benchmark && bun install && bun run bench`.
+
 ## Contributing
 
 Only relevant if you're changing `rust/src/lib.rs` itself:
