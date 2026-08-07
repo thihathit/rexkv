@@ -87,6 +87,7 @@ function sqliteEngine(path: string): BenchEngine {
       db = new SQLiteDatabase(path);
       db.exec("PRAGMA journal_mode = WAL");
       db.exec("PRAGMA synchronous = NORMAL");
+      db.exec("PRAGMA mmap_size = 268435456");
       db.exec("CREATE TABLE IF NOT EXISTS kv (k BLOB PRIMARY KEY, v BLOB) WITHOUT ROWID");
       upsert = db.prepare(
         "INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
@@ -223,6 +224,10 @@ function median(xs: number[]): number {
   return xs[Math.floor(xs.length / 2)];
 }
 
+function rssMB(): number {
+  return process.memoryUsage().rss / (1024 * 1024);
+}
+
 async function timeWorkload(engine: BenchEngine, w: Workload): Promise<number> {
   const samples: number[] = [];
   for (let r = 0; r < ROUNDS; r++) {
@@ -233,7 +238,16 @@ async function timeWorkload(engine: BenchEngine, w: Workload): Promise<number> {
   return median(samples);
 }
 
-async function benchEngine(engine: BenchEngine): Promise<Record<Workload, number>> {
+async function benchEngine(engine: BenchEngine): Promise<{
+  results: Record<Workload, number>;
+  peakRssMB: number;
+}> {
+  // Peak RSS is measured as the delta over the pre-open baseline, sampled every
+  // 10ms plus right after each workload. This captures page cache the engine's
+  // DB file(s) pulled in as well as its own allocations.
+  const baseline = rssMB();
+  let peak = baseline;
+  const timer = setInterval(() => (peak = Math.max(peak, rssMB())), 10);
   engine.open();
   try {
     for (const k of warmupKeys) await engine.put(k, value);
@@ -242,9 +256,13 @@ async function benchEngine(engine: BenchEngine): Promise<Record<Workload, number
       if (v && typeof v === "object") sink += (v as { byteLength?: number }).byteLength ?? 0;
     }
     const results = {} as Record<Workload, number>;
-    for (const w of WORKLOADS) results[w] = await timeWorkload(engine, w);
-    return results;
+    for (const w of WORKLOADS) {
+      results[w] = await timeWorkload(engine, w);
+      peak = Math.max(peak, rssMB());
+    }
+    return { results, peakRssMB: peak - baseline };
   } finally {
+    clearInterval(timer);
     await engine.close();
   }
 }
@@ -280,9 +298,10 @@ async function main() {
     `${process.platform} ${process.arch} · bun ${process.versions.bun} · n=${N} keysize=${KEY_SIZE} valuesize=${VALUE_SIZE} batch=${BATCH} rounds=${ROUNDS}`,
   );
   console.log();
-  const header = `  ${pad("engine", 20)} ${WORKLOADS.map((w, i) => pad(`${w} (ops/s)`, colW[i])).join(" ")} ${pad("total", 8)}`;
+  const workloadHeader = WORKLOADS.map((w, i) => pad(`${w} (ops/s)`, colW[i]));
+  const header = `  ${pad("engine", 20)} ${workloadHeader.join(" ")} ${pad("total", 8)} ${pad("rss (MB)", 10)}`;
   console.log(header);
-  console.log("  " + "-".repeat(20 + colW.reduce((a, b) => a + b, 0) + WORKLOADS.length + 8));
+  console.log("  " + "-".repeat(header.length - 2));
 
   const totals: Record<string, number> = {};
   const perWorkload: Record<Workload, { engine: string; ms: number }[]> = {
@@ -293,14 +312,16 @@ async function main() {
   };
 
   for (const engine of engines) {
-    const results = await benchEngine(engine);
+    const { results, peakRssMB } = await benchEngine(engine);
     const total = Object.values(results).reduce((a, b) => a + b, 0);
     totals[engine.name] = total;
     const cells = WORKLOADS.map((w) => {
       const ops = (N / results[w]) * 1000;
       return pad(`${fmtOps(ops)} (${fmtMs(results[w])})`, colW[WORKLOADS.indexOf(w)]);
     }).join(" ");
-    console.log(`  ${pad(engine.name, 20)} ${cells} ${pad(`${(total / 1000).toFixed(2)}s`, 8)}`);
+    console.log(
+      `  ${pad(engine.name, 20)} ${cells} ${pad(`${(total / 1000).toFixed(2)}s`, 8)} ${pad(`${peakRssMB.toFixed(1)}`, 10)}`,
+    );
     for (const w of WORKLOADS) perWorkload[w].push({ engine: engine.name, ms: results[w] });
   }
 
