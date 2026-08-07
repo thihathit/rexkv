@@ -17,9 +17,7 @@ See [API.md](./API.md) for the full API reference — the native bindings
 
 ## Benchmarks
 
-`benchmark/` compares rexkv against [`bun:lmdb`](https://bun.com/docs/api/lmdb)
-and [`bun:sqlite`](https://bun.com/docs/api/sqlite) on sequential and batched
-writes and reads. `cd benchmark && bun install && bun run bench`.
+See [`benchmark/`](./benchmark) compares rexkv against similar approaches on sequential and batched writes and reads.
 
 ## Contributing
 
