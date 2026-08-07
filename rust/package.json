@@ -2,6 +2,13 @@
   "name": "rexkv-native",
   "version": "0.1.0",
   "private": true,
+  "scripts": {
+    "build": "napi build --platform --release --dts ../ts/types.d.ts",
+    "build:debug": "napi build --platform --dts ../ts/types.d.ts"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3"
+  },
   "napi": {
     "binaryName": "rexkv",
     "targets": [
@@ -11,12 +18,5 @@
       "aarch64-unknown-linux-gnu",
       "x86_64-pc-windows-msvc"
     ]
-  },
-  "devDependencies": {
-    "@napi-rs/cli": "^3"
-  },
-  "scripts": {
-    "build": "napi build --platform --release --dts ../ts/types.d.ts",
-    "build:debug": "napi build --platform --dts ../ts/types.d.ts"
   }
 }
