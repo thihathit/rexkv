@@ -2,6 +2,7 @@ use napi::bindgen_prelude::*;
 use napi::JsValue;
 use napi_derive::napi;
 use redb::{Database, Durability, TableDefinition, TableError};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -17,6 +18,12 @@ struct SharedDb {
     durability: Durability,
     /// Write-side policy: whether new values are LZ4-compressed before store.
     put_compression: bool,
+    /// Database file path, for `status().fileSizeBytes`.
+    path: String,
+    /// Jobs currently sitting in the write channel (diagnostics for `status()`).
+    pending: AtomicUsize,
+    /// Times the queue was full and a write was rejected (for `status()`).
+    rejected: AtomicUsize,
 }
 
 impl SharedDb {
@@ -196,6 +203,7 @@ fn writer_loop(shared: Arc<SharedDb>, rx: Receiver<Job>) {
     let put_compression = shared.put_compression;
     let mut closing = false;
     while let Ok(job) = rx.recv() {
+        shared.pending.fetch_sub(1, Ordering::Relaxed);
         if closing {
             // After Close, the writer stays alive to drain the channel and
             // reject everything still queued, so no promise is ever left
@@ -328,19 +336,47 @@ pub struct KvStoreOptions {
     pub put_compression: Option<KvCompression>,
 }
 
+/// Runtime snapshot of a store, returned by `KvStore.status()`.
+#[napi(object)]
+pub struct KvStoreStatus {
+    /// Whether the database is still open (not yet closed).
+    pub open: bool,
+    /// Jobs currently waiting in the write queue for the writer thread —
+    /// writes, batch gets, and close. Zero once all issued calls have settled.
+    pub pending: u32,
+    /// The `maxQueue` limit: with this many jobs queued, more writes reject
+    /// with a "queue is full" error instead of growing memory.
+    pub max_queue: u32,
+    /// How many writes have been rejected because the queue was full.
+    pub rejected: i64,
+    /// Write-side compression policy in effect.
+    pub put_compression: KvCompression,
+    /// Fsync durability policy in effect.
+    pub durability: KvDurability,
+    /// Current size of the database file in bytes, if the file still exists.
+    pub file_size_bytes: Option<i64>,
+}
+
 #[napi]
 pub struct KvStore {
     shared: Arc<SharedDb>,
     sender: SyncSender<Job>,
+    max_queue: usize,
 }
 
 impl KvStore {
     fn enqueue(&self, job: Job) -> Result<()> {
         match self.sender.try_send(job) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => Err(Error::from_reason(
-                "rexkv write queue is full; await some pending writes before issuing more",
-            )),
+            Ok(()) => {
+                self.shared.pending.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(TrySendError::Full(_)) => {
+                self.shared.rejected.fetch_add(1, Ordering::Relaxed);
+                Err(Error::from_reason(
+                    "rexkv write queue is full; await some pending writes before issuing more",
+                ))
+            }
             Err(TrySendError::Disconnected(_)) => Err(Error::from_reason("database is closed")),
         }
     }
@@ -367,21 +403,25 @@ impl KvStore {
             None => (Durability::Immediate, 1024, true),
         };
 
-        let db = Database::create(path).map_err(to_napi_err)?;
+        let db = Database::create(path.clone()).map_err(to_napi_err)?;
         let shared = Arc::new(SharedDb {
             db: Mutex::new(Some(Arc::new(db))),
             durability,
             put_compression,
+            path,
+            pending: AtomicUsize::new(0),
+            rejected: AtomicUsize::new(0),
         });
 
-        let (sender, receiver) = sync_channel(max_queue.max(1));
+        let max_queue = max_queue.max(1);
+        let (sender, receiver) = sync_channel(max_queue);
         let worker_shared = shared.clone();
         thread::Builder::new()
             .name("rexkv-writer".to_string())
             .spawn(move || writer_loop(worker_shared, receiver))
             .map_err(to_napi_err)?;
 
-        Ok(Self { shared, sender })
+        Ok(Self { shared, sender, max_queue })
     }
 
     /// Drain the write queue, flush, and close the database. Resolves once
@@ -416,6 +456,30 @@ impl KvStore {
             name,
         })
     }
+
+    /// Snapshot of the store's runtime state: open/closed, write-queue
+    /// pressure, and the durability/compression settings in effect. Sync
+    /// and cheap; useful for diagnostics and for polling queue pressure.
+    #[napi]
+    pub fn status(&self) -> KvStoreStatus {
+        KvStoreStatus {
+            open: self.shared.get().is_ok(),
+            pending: self.shared.pending.load(Ordering::Relaxed) as u32,
+            max_queue: self.max_queue as u32,
+            rejected: self.shared.rejected.load(Ordering::Relaxed) as i64,
+            put_compression: if self.shared.put_compression {
+                KvCompression::Lz4
+            } else {
+                KvCompression::None
+            },
+            durability: match self.shared.durability {
+                Durability::None => KvDurability::None,
+                Durability::Eventual => KvDurability::Eventual,
+                _ => KvDurability::Immediate,
+            },
+            file_size_bytes: std::fs::metadata(&self.shared.path).ok().map(|m| m.len() as i64),
+        }
+    }
 }
 
 #[napi]
@@ -428,10 +492,16 @@ pub struct KvTable {
 impl KvTable {
     fn enqueue(&self, job: Job) -> Result<()> {
         match self.sender.try_send(job) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => Err(Error::from_reason(
-                "rexkv write queue is full; await some pending writes before issuing more",
-            )),
+            Ok(()) => {
+                self.shared.pending.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(TrySendError::Full(_)) => {
+                self.shared.rejected.fetch_add(1, Ordering::Relaxed);
+                Err(Error::from_reason(
+                    "rexkv write queue is full; await some pending writes before issuing more",
+                ))
+            }
             Err(TrySendError::Disconnected(_)) => Err(Error::from_reason("database is closed")),
         }
     }

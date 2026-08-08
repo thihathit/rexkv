@@ -6,6 +6,7 @@ export type {
   KvEntry,
   KvStore,
   KvStoreOptions,
+  KvStoreStatus,
   KvTable,
 } from "./types.d.ts";
 
