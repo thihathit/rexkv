@@ -13,13 +13,17 @@ Compares three embedded storage engines as used from Bun on this machine:
 ```bash
 cd benchmark
 bun install
-bun run bench            # defaults below
+bun run bench            # all benchmarks, sequentially
+bun run bench:speed      # only rexkv vs LMDB vs BunSQLite (bench.ts)
 bun run bench -- --n 50000 --valuesize 256 --durability eventual
 bun run bench -- --rounds 3     # median of 3 per workload
+bun run bench:compression       # only rexkv compression "none" vs "lz4" (compression.ts)
 ```
 
-Defaults: `n=10_000`, `keysize=16`, `valuesize=64`, `batch=1000`, `rounds=1`,
-`durability=eventual,immediate`.
+`bun run bench` runs `all.ts`, which runs the speed comparison (`bench.ts`)
+then the compression comparison (`compression.ts`) in one process. Defaults:
+`n=10_000`, `keysize=16`, `valuesize=64`, `batch=1000`, `rounds=1`,
+`durability=eventual,immediate` (speed bench only).
 
 ## Methodology
 
@@ -62,6 +66,45 @@ Reading: single-key `write_seq` is dominated by per-write commit/round-trip cost
 (all three engines are close except sqlite's autocommit); bulk writes and bulk
 reads favor the batched APIs; rexkv's sync `get` matches LMDB and beats sqlite
 row parsing. See the fairness notes before drawing conclusions.
+
+## Compression (lz4) sample run
+
+`bun run bench:compression` compares the same rexkv store with
+`compression: "none"` vs `"lz4"` — awaited `put` throughput, `getBatch`
+throughput, and on-disk db size. Compressible values are JSON with a repeated
+4KiB payload (realistic blobs); incompressible values are deterministic random
+bytes. CPU-bound rows use `durability: "none"` to isolate the compression cost
+from fsync; `immediate` rows reflect the default per-commit fsync.
+
+```
+=== rexkv compression: none vs lz4 ===
+linux x64 · bun 1.3.14 · 4KiB values, n=2000 (64KiB rows use n=400)
+
+mode                data            dur        |  throughput
+───────────────────────────────────────────────────────────────────────────────────
+none  / compressible    none        put   1.9k/s  get  75.3k/s  db 132108KiB  (16.40x of raw)
+lz4   / compressible    none        put   2.2k/s  get  52.5k/s  db  66316KiB  ( 8.23x of raw)
+none  / incompressible  none        put   2.0k/s  get  71.5k/s  db 132108KiB  (16.49x of raw)
+lz4   / incompressible  none        put   2.1k/s  get  74.3k/s  db 132108KiB  (16.49x of raw)
+none  / compressible    immediate   put   3.0k/s  get  43.9k/s  db  33420KiB  ( 4.15x of raw)
+lz4   / compressible    immediate   put   3.7k/s  get  72.9k/s  db   3600KiB  ( 0.45x of raw)
+none  / compressible    none        put   1.1k/s  get   2.4k/s  db 132108KiB  ( 5.16x of raw)  64KiB values
+lz4   / compressible    none        put   2.5k/s  get   6.4k/s  db  16972KiB  ( 0.66x of raw)  64KiB values
+```
+
+Reading: lz4 is never slower — put is equal or faster in every row (the 64KiB
+case is ~2×). At the default `immediate` durability the compressed file is
+~9× smaller (0.45× of the raw bytes, vs 4.15× for none-mode) and reads speed
+up as the working set shrinks (43.9k → 72.9k/s in this run). Incompressible
+data is stored raw, so there is no size change and only a little CPU overhead.
+The `none`-durability db sizes are not meaningful: redb grows the file until a
+higher-durability commit.
+
+Caveats: single-run numbers, machine-specific, and get-throughput has visible
+run-to-run variance (page cache from the previous scenario is still resident).
+No `--rounds` support — repeat the command for a spread. Note also that
+compression is a per-store policy — a file written with `"lz4"` must be
+reopened with `"lz4"` (see API.md).
 
 ## Fairness notes
 

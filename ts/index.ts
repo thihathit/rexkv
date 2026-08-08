@@ -1,6 +1,13 @@
 import type { KvStore, KvTable } from "./types.d.ts";
 
-export type { KvDurability, KvEntry, KvStore, KvStoreOptions, KvTable } from "./types.d.ts";
+export type {
+  KvCompression,
+  KvDurability,
+  KvEntry,
+  KvStore,
+  KvStoreOptions,
+  KvTable,
+} from "./types.d.ts";
 
 /** Key accepted by `JsonTable`; strings are utf8-encoded to bytes. */
 export type JsonKey = Buffer | string;

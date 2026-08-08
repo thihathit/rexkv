@@ -283,7 +283,7 @@ function pad(s: string, width: number): string {
   return s.length >= width ? s : s + " ".repeat(width - s.length);
 }
 
-async function main() {
+export async function main() {
   const engines: BenchEngine[] = [
     lmdbEngine(tempDbPath(), "lmdb"),
     sqliteEngine(tempDbPath()),
@@ -344,4 +344,6 @@ async function main() {
   console.log("done");
 }
 
-main();
+if (import.meta.main) {
+  void main();
+}

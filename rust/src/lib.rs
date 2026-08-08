@@ -15,6 +15,7 @@ type Reply<T> = oneshot::Sender<std::result::Result<T, String>>;
 struct SharedDb {
     db: Mutex<Option<Arc<Database>>>,
     durability: Durability,
+    compression: bool,
 }
 
 impl SharedDb {
@@ -37,6 +38,50 @@ impl SharedDb {
 
 fn to_napi_err<E: std::fmt::Display>(e: E) -> Error {
     Error::from_reason(e.to_string())
+}
+
+/// Value storage format. With compression enabled, every stored value carries a
+/// 1-byte tag so reads can tell raw and LZ4-compressed values apart. With it
+/// disabled, values are stored as-is (byte-identical to pre-compression files).
+const TAG_RAW: u8 = 0x00;
+const TAG_LZ4: u8 = 0x01;
+
+/// Encode a value for storage. Compresses only when it actually shrinks, so
+/// small or incompressible values stay raw (plus the 1-byte tag).
+fn encode_value(compress: bool, value: &[u8]) -> Vec<u8> {
+    if !compress {
+        return value.to_vec();
+    }
+    let compressed = lz4_flex::block::compress_prepend_size(value);
+    if compressed.len() + 1 < value.len() {
+        let mut out = Vec::with_capacity(compressed.len() + 1);
+        out.push(TAG_LZ4);
+        out.extend_from_slice(&compressed);
+        out
+    } else {
+        let mut out = Vec::with_capacity(value.len() + 1);
+        out.push(TAG_RAW);
+        out.extend_from_slice(value);
+        out
+    }
+}
+
+/// Decode a stored value back to its original bytes. Only a store opened with
+/// compression interprets tags; untagged values (or a none-mode store) are
+/// returned as-is. `compression` must match when reopening a database file.
+fn decode_value(
+    compress: bool,
+    stored: &[u8],
+) -> std::result::Result<Vec<u8>, String> {
+    if !compress {
+        return Ok(stored.to_vec());
+    }
+    match stored.first() {
+        Some(&TAG_RAW) => Ok(stored[1..].to_vec()),
+        Some(&TAG_LZ4) => lz4_flex::block::decompress_size_prepended(&stored[1..])
+            .map_err(|e| e.to_string()),
+        _ => Ok(stored.to_vec()),
+    }
 }
 
 /// A write-side operation, applied in order by the single writer thread.
@@ -70,17 +115,19 @@ enum Job {
 fn worker_put(
     db: &Database,
     durability: Durability,
+    compress: bool,
     table: &str,
     key: &[u8],
     value: &[u8],
 ) -> std::result::Result<(), String> {
     let mut txn = db.begin_write().map_err(|e| e.to_string())?;
     txn.set_durability(durability);
+    let stored = encode_value(compress, value);
     {
         let mut t = txn
             .open_table(TableDefinition::<&[u8], &[u8]>::new(table))
             .map_err(|e| e.to_string())?;
-        t.insert(key, value).map_err(|e| e.to_string())?;
+        t.insert(key, stored.as_slice()).map_err(|e| e.to_string())?;
     }
     txn.commit().map_err(|e| e.to_string())
 }
@@ -107,6 +154,7 @@ fn worker_delete(
 fn worker_put_batch(
     db: &Database,
     durability: Durability,
+    compress: bool,
     table: &str,
     entries: &[(Vec<u8>, Vec<u8>)],
 ) -> std::result::Result<(), String> {
@@ -117,7 +165,8 @@ fn worker_put_batch(
             .open_table(TableDefinition::<&[u8], &[u8]>::new(table))
             .map_err(|e| e.to_string())?;
         for (key, value) in entries {
-            t.insert(key.as_slice(), value.as_slice()).map_err(|e| e.to_string())?;
+            let stored = encode_value(compress, value);
+            t.insert(key.as_slice(), stored.as_slice()).map_err(|e| e.to_string())?;
         }
     }
     txn.commit().map_err(|e| e.to_string())
@@ -125,6 +174,7 @@ fn worker_put_batch(
 
 fn worker_get_batch(
     db: &Database,
+    compress: bool,
     table: &str,
     keys: &[Vec<u8>],
 ) -> std::result::Result<Vec<Option<Vec<u8>>>, String> {
@@ -137,7 +187,7 @@ fn worker_get_batch(
     let mut out = Vec::with_capacity(keys.len());
     for key in keys {
         match t.get(key.as_slice()).map_err(|e| e.to_string())? {
-            Some(v) => out.push(Some(v.value().to_vec())),
+            Some(v) => out.push(Some(decode_value(compress, v.value())?)),
             None => out.push(None),
         }
     }
@@ -146,6 +196,7 @@ fn worker_get_batch(
 
 fn writer_loop(shared: Arc<SharedDb>, rx: Receiver<Job>) {
     let durability = shared.durability;
+    let compression = shared.compression;
     let mut closing = false;
     while let Ok(job) = rx.recv() {
         if closing {
@@ -176,7 +227,7 @@ fn writer_loop(shared: Arc<SharedDb>, rx: Receiver<Job>) {
             Job::Put { table, key, value, reply } => {
                 let res = shared
                     .get_string()
-                    .and_then(|db| worker_put(&db, durability, &table, &key, &value));
+                    .and_then(|db| worker_put(&db, durability, compression, &table, &key, &value));
                 let _ = reply.send(res);
             }
             Job::Delete { table, key, reply } => {
@@ -186,13 +237,15 @@ fn writer_loop(shared: Arc<SharedDb>, rx: Receiver<Job>) {
                 let _ = reply.send(res);
             }
             Job::PutBatch { table, entries, reply } => {
-                let res = shared
-                    .get_string()
-                    .and_then(|db| worker_put_batch(&db, durability, &table, &entries));
+                let res = shared.get_string().and_then(|db| {
+                    worker_put_batch(&db, durability, compression, &table, &entries)
+                });
                 let _ = reply.send(res);
             }
             Job::GetBatch { table, keys, reply } => {
-                let res = shared.get_string().and_then(|db| worker_get_batch(&db, &table, &keys));
+                let res = shared.get_string().and_then(|db| {
+                    worker_get_batch(&db, compression, &table, &keys)
+                });
                 let _ = reply.send(res);
             }
             Job::Close { reply } => {
@@ -253,6 +306,17 @@ pub enum KvDurability {
     Immediate,
 }
 
+/// Compression policy for stored values.
+#[napi(string_enum)]
+pub enum KvCompression {
+    /// Store values as-is (default).
+    #[napi(value = "none")]
+    None,
+    /// Compress value bytes with LZ4 before storing; decompressed on read.
+    #[napi(value = "lz4")]
+    Lz4,
+}
+
 #[napi(object)]
 pub struct KvStoreOptions {
     /// Fsync policy for write transactions. Defaults to `Immediate`.
@@ -260,6 +324,8 @@ pub struct KvStoreOptions {
     /// Max number of queued write jobs before `put`/`putBatch`/`delete`
     /// reject with a "queue is full" error (backpressure). Defaults to 1024.
     pub max_queue: Option<u32>,
+    /// Value compression. Defaults to `None`.
+    pub compression: Option<KvCompression>,
 }
 
 #[napi]
@@ -285,7 +351,7 @@ impl KvStore {
     /// Open (or create) a redb database file at the given path.
     #[napi(constructor)]
     pub fn new(path: String, options: Option<KvStoreOptions>) -> Result<Self> {
-        let (durability, max_queue) = match options {
+        let (durability, max_queue, compression) = match options {
             Some(o) => (
                 match o.durability {
                     Some(KvDurability::None) => Durability::None,
@@ -293,14 +359,16 @@ impl KvStore {
                     Some(KvDurability::Immediate) | None => Durability::Immediate,
                 },
                 o.max_queue.unwrap_or(1024) as usize,
+                matches!(o.compression, Some(KvCompression::Lz4)),
             ),
-            None => (Durability::Immediate, 1024),
+            None => (Durability::Immediate, 1024, false),
         };
 
         let db = Database::create(path).map_err(to_napi_err)?;
         let shared = Arc::new(SharedDb {
             db: Mutex::new(Some(Arc::new(db))),
             durability,
+            compression,
         });
 
         let (sender, receiver) = sync_channel(max_queue.max(1));
@@ -388,7 +456,9 @@ impl KvTable {
         let key_slice: &[u8] = &key;
 
         match table.get(key_slice).map_err(to_napi_err)? {
-            Some(v) => Ok(Some(Buffer::from(v.value().to_vec()))),
+            Some(v) => Ok(Some(Buffer::from(
+                decode_value(self.shared.compression, v.value()).map_err(to_napi_err)?,
+            ))),
             None => Ok(None),
         }
     }

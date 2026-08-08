@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "bench": "bun bench.ts",
+    "bench": "bun all.ts",
+    "bench:speed": "bun bench.ts",
+    "bench:compression": "bun compression.ts",
     "format": "oxfmt",
     "typecheck": "tsc"
   },
