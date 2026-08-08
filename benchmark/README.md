@@ -102,9 +102,9 @@ higher-durability commit.
 
 Caveats: single-run numbers, machine-specific, and get-throughput has visible
 run-to-run variance (page cache from the previous scenario is still resident).
-No `--rounds` support — repeat the command for a spread. Note also that
-compression is a per-store policy — a file written with `"lz4"` must be
-reopened with `"lz4"` (see API.md).
+No `--rounds` support — repeat the command for a spread. `lz4` is the default
+for new stores; `"none"` is opt-in (see API.md — compression is a per-store
+policy and a file written with one mode must be reopened with that mode).
 
 ## Fairness notes
 

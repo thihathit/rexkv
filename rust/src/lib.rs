@@ -309,10 +309,11 @@ pub enum KvDurability {
 /// Compression policy for stored values.
 #[napi(string_enum)]
 pub enum KvCompression {
-    /// Store values as-is (default).
+    /// Store values as-is.
     #[napi(value = "none")]
     None,
-    /// Compress value bytes with LZ4 before storing; decompressed on read.
+    /// Compress value bytes with LZ4 before storing; decompressed on read
+    /// (default).
     #[napi(value = "lz4")]
     Lz4,
 }
@@ -324,7 +325,7 @@ pub struct KvStoreOptions {
     /// Max number of queued write jobs before `put`/`putBatch`/`delete`
     /// reject with a "queue is full" error (backpressure). Defaults to 1024.
     pub max_queue: Option<u32>,
-    /// Value compression. Defaults to `None`.
+    /// Value compression. Defaults to `Lz4`.
     pub compression: Option<KvCompression>,
 }
 
@@ -359,9 +360,9 @@ impl KvStore {
                     Some(KvDurability::Immediate) | None => Durability::Immediate,
                 },
                 o.max_queue.unwrap_or(1024) as usize,
-                matches!(o.compression, Some(KvCompression::Lz4)),
+                matches!(o.compression.unwrap_or(KvCompression::Lz4), KvCompression::Lz4),
             ),
-            None => (Durability::Immediate, 1024, false),
+            None => (Durability::Immediate, 1024, true),
         };
 
         let db = Database::create(path).map_err(to_napi_err)?;
