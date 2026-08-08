@@ -133,8 +133,27 @@ const KvStore = getKvStore(require("./rexkv.linux-x64-gnu.node"));
 
 ---
 
+## Limitations
+
+### No true zero-copy reads
+
+redb does not memory-map its database file: values are read from disk into an in-memory
+page cache, and a read hands back bytes borrowed from one of those cached pages. The
+borrowed slice lives only as long as redb's `AccessGuard`, which is pinned to the read
+transaction — once the guard (or transaction) drops, the cache may evict or reuse the
+page. redb provides no way to detach a pointer and keep it valid independently of a
+transaction.
+
+Returned values are therefore copied before they reach JS: napi transfers the bytes to
+the JS heap as a `Buffer` at promise-resolution time. True zero-copy reads would require
+the engine to expose stable pointers whose lifetime can outlive a transaction — the way
+mmap-based engines (e.g. LMDB) do — which redb's storage model does not. Even then, Node
+builds with the V8 memory cage (e.g. Electron) reject external buffers entirely and fall
+back to copying, so zero-copy cannot be relied on in every runtime.
+
+---
+
 ## Roadmap
 
 - `iterate` — async ordered range scan over byte keys (pairs naturally with UUIDv7 keys).
-- Buffer pooling / zero-copy for large values.
 - Optional `compression: "lz4"` for big-value workloads.
