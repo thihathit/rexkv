@@ -5,7 +5,7 @@ import type { KvDurability } from "rexkv";
 import { KvStore, tempDbPath } from "./native.ts";
 
 // ---------------------------------------------------------------------------
-// Configuration (override on the CLI: `bun bench.ts --n 50000 --valuesize 256`)
+// Configuration (override on the CLI: `bun bench-speed.ts --n 50000 --valuesize 256`)
 // ---------------------------------------------------------------------------
 
 function arg(name: string, fallback: string): string {

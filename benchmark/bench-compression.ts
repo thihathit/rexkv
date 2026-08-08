@@ -1,5 +1,5 @@
 // Bench: rexkv compression "none" vs "lz4" — write throughput, read throughput, db size.
-// Run: `bun compression.ts` (builds the native addon on first run via ./native.ts).
+// Run: `bun bench-compression.ts` (builds the native addon on first run via ./native.ts).
 import { performance } from "node:perf_hooks";
 import { statSync } from "node:fs";
 import type { KvCompression, KvDurability } from "rexkv";
@@ -42,7 +42,7 @@ async function scenario(
 ): Promise<void> {
   const dbPath = tempDbPath();
   const kv = new KvStore(dbPath, {
-    compression: mode as KvCompression,
+    putCompression: mode as KvCompression,
     durability: dur as KvDurability,
     maxQueue: 4096,
   });

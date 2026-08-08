@@ -14,16 +14,16 @@ Compares three embedded storage engines as used from Bun on this machine:
 cd benchmark
 bun install
 bun run bench            # all benchmarks, sequentially
-bun run bench:speed      # only rexkv vs LMDB vs BunSQLite (bench.ts)
+bun run bench:speed      # only rexkv vs LMDB vs BunSQLite (bench-speed.ts)
 bun run bench -- --n 50000 --valuesize 256 --durability eventual
 bun run bench -- --rounds 3     # median of 3 per workload
-bun run bench:compression       # only rexkv compression "none" vs "lz4" (compression.ts)
+bun run bench:compression       # only rexkv compression "none" vs "lz4" (bench-compression.ts)
 ```
 
-`bun run bench` runs `all.ts`, which runs the speed comparison (`bench.ts`)
-then the compression comparison (`compression.ts`) in one process. Defaults:
-`n=10_000`, `keysize=16`, `valuesize=64`, `batch=1000`, `rounds=1`,
-`durability=eventual,immediate` (speed bench only).
+`bun run bench` runs `all.ts`, which runs the speed comparison
+(`bench-speed.ts`) then the compression comparison (`bench-compression.ts`) in
+one process. Defaults: `n=10_000`, `keysize=16`, `valuesize=64`, `batch=1000`,
+`rounds=1`, `durability=eventual,immediate` (speed bench only).
 
 ## Methodology
 
@@ -102,9 +102,9 @@ higher-durability commit.
 
 Caveats: single-run numbers, machine-specific, and get-throughput has visible
 run-to-run variance (page cache from the previous scenario is still resident).
-No `--rounds` support — repeat the command for a spread. `lz4` is the default
-for new stores; `"none"` is opt-in (see API.md — compression is a per-store
-policy and a file written with one mode must be reopened with that mode).
+No `--rounds` support — repeat the command for a spread. `"lz4"` is the default
+for new stores; `putCompression` is write-side only — reads use each value's
+own tag, so a store can be reopened with any setting (see API.md).
 
 ## Fairness notes
 

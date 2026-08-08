@@ -4,8 +4,8 @@
   "type": "module",
   "scripts": {
     "bench": "bun all.ts",
-    "bench:speed": "bun bench.ts",
-    "bench:compression": "bun compression.ts",
+    "bench:speed": "bun bench-speed.ts",
+    "bench:compression": "bun bench-compression.ts",
     "format": "oxfmt",
     "typecheck": "tsc"
   },

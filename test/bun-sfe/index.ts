@@ -17,6 +17,6 @@ store.putBatch([
   { key: Buffer.from("b"), value: Buffer.from("2") },
 ]);
 console.log("batch a:", store.get(Buffer.from("a"))?.toString());
-console.log("delete b:", store.delete(Buffer.from("b")));
+console.log("delete b:", await store.delete(Buffer.from("b")));
 console.log("b after delete:", store.get(Buffer.from("b")));
 console.log("BUN SFE TEST OK");

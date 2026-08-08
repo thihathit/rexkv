@@ -1,6 +1,6 @@
 // Run every benchmark sequentially. `bun run bench` in the benchmark dir.
-import { main as speedBench } from "./bench.ts";
-import { main as compressionBench } from "./compression.ts";
+import { main as speedBench } from "./bench-speed.ts";
+import { main as compressionBench } from "./bench-compression.ts";
 
 await speedBench();
 console.log();

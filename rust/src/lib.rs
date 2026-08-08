@@ -15,7 +15,8 @@ type Reply<T> = oneshot::Sender<std::result::Result<T, String>>;
 struct SharedDb {
     db: Mutex<Option<Arc<Database>>>,
     durability: Durability,
-    compression: bool,
+    /// Write-side policy: whether new values are LZ4-compressed before store.
+    put_compression: bool,
 }
 
 impl SharedDb {
@@ -40,47 +41,44 @@ fn to_napi_err<E: std::fmt::Display>(e: E) -> Error {
     Error::from_reason(e.to_string())
 }
 
-/// Value storage format. With compression enabled, every stored value carries a
-/// 1-byte tag so reads can tell raw and LZ4-compressed values apart. With it
-/// disabled, values are stored as-is (byte-identical to pre-compression files).
+/// Value storage format. Every stored value starts with a 1-byte tag so reads
+/// can decode each value on its own, without knowing how it was written.
+/// `put_compression` is only a write-time policy — the read side always trusts
+/// the tag. Values written with compression off carry `TAG_RAW`; compression
+/// is applied only when it actually shrinks the value.
 const TAG_RAW: u8 = 0x00;
 const TAG_LZ4: u8 = 0x01;
 
-/// Encode a value for storage. Compresses only when it actually shrinks, so
-/// small or incompressible values stay raw (plus the 1-byte tag).
+/// Encode a value for storage. Always writes a tag, so any mode can read it
+/// back. Compresses only when it actually shrinks, so small or incompressible
+/// values stay raw (plus the 1-byte tag).
 fn encode_value(compress: bool, value: &[u8]) -> Vec<u8> {
-    if !compress {
-        return value.to_vec();
+    let mut out = Vec::with_capacity(value.len() + 1);
+    if compress {
+        let compressed = lz4_flex::block::compress_prepend_size(value);
+        if compressed.len() + 1 < value.len() {
+            out.push(TAG_LZ4);
+            out.extend_from_slice(&compressed);
+            return out;
+        }
     }
-    let compressed = lz4_flex::block::compress_prepend_size(value);
-    if compressed.len() + 1 < value.len() {
-        let mut out = Vec::with_capacity(compressed.len() + 1);
-        out.push(TAG_LZ4);
-        out.extend_from_slice(&compressed);
-        out
-    } else {
-        let mut out = Vec::with_capacity(value.len() + 1);
-        out.push(TAG_RAW);
-        out.extend_from_slice(value);
-        out
-    }
+    out.push(TAG_RAW);
+    out.extend_from_slice(value);
+    out
 }
 
-/// Decode a stored value back to its original bytes. Only a store opened with
-/// compression interprets tags; untagged values (or a none-mode store) are
-/// returned as-is. `compression` must match when reopening a database file.
-fn decode_value(
-    compress: bool,
-    stored: &[u8],
-) -> std::result::Result<Vec<u8>, String> {
-    if !compress {
-        return Ok(stored.to_vec());
-    }
+/// Decode a stored value back to its original bytes, using the value's own
+/// tag. Values that don't start with a known tag fail loudly instead of being
+/// guessed at — that catches incompatible formats (e.g. pre-tag files).
+fn decode_value(stored: &[u8]) -> std::result::Result<Vec<u8>, String> {
     match stored.first() {
         Some(&TAG_RAW) => Ok(stored[1..].to_vec()),
         Some(&TAG_LZ4) => lz4_flex::block::decompress_size_prepended(&stored[1..])
             .map_err(|e| e.to_string()),
-        _ => Ok(stored.to_vec()),
+        Some(&b) => Err(format!(
+            "incompatible value format: first byte 0x{b:02x} is not a rexkv tag"
+        )),
+        None => Err("incompatible value format: empty stored value".to_string()),
     }
 }
 
@@ -174,7 +172,6 @@ fn worker_put_batch(
 
 fn worker_get_batch(
     db: &Database,
-    compress: bool,
     table: &str,
     keys: &[Vec<u8>],
 ) -> std::result::Result<Vec<Option<Vec<u8>>>, String> {
@@ -187,7 +184,7 @@ fn worker_get_batch(
     let mut out = Vec::with_capacity(keys.len());
     for key in keys {
         match t.get(key.as_slice()).map_err(|e| e.to_string())? {
-            Some(v) => out.push(Some(decode_value(compress, v.value())?)),
+            Some(v) => out.push(Some(decode_value(v.value())?)),
             None => out.push(None),
         }
     }
@@ -196,7 +193,7 @@ fn worker_get_batch(
 
 fn writer_loop(shared: Arc<SharedDb>, rx: Receiver<Job>) {
     let durability = shared.durability;
-    let compression = shared.compression;
+    let put_compression = shared.put_compression;
     let mut closing = false;
     while let Ok(job) = rx.recv() {
         if closing {
@@ -227,7 +224,7 @@ fn writer_loop(shared: Arc<SharedDb>, rx: Receiver<Job>) {
             Job::Put { table, key, value, reply } => {
                 let res = shared
                     .get_string()
-                    .and_then(|db| worker_put(&db, durability, compression, &table, &key, &value));
+                    .and_then(|db| worker_put(&db, durability, put_compression, &table, &key, &value));
                 let _ = reply.send(res);
             }
             Job::Delete { table, key, reply } => {
@@ -238,13 +235,13 @@ fn writer_loop(shared: Arc<SharedDb>, rx: Receiver<Job>) {
             }
             Job::PutBatch { table, entries, reply } => {
                 let res = shared.get_string().and_then(|db| {
-                    worker_put_batch(&db, durability, compression, &table, &entries)
+                    worker_put_batch(&db, durability, put_compression, &table, &entries)
                 });
                 let _ = reply.send(res);
             }
             Job::GetBatch { table, keys, reply } => {
                 let res = shared.get_string().and_then(|db| {
-                    worker_get_batch(&db, compression, &table, &keys)
+                    worker_get_batch(&db, &table, &keys)
                 });
                 let _ = reply.send(res);
             }
@@ -325,8 +322,10 @@ pub struct KvStoreOptions {
     /// Max number of queued write jobs before `put`/`putBatch`/`delete`
     /// reject with a "queue is full" error (backpressure). Defaults to 1024.
     pub max_queue: Option<u32>,
-    /// Value compression. Defaults to `Lz4`.
-    pub compression: Option<KvCompression>,
+    /// Write-side compression for newly stored values. Defaults to `Lz4`.
+    /// Reads are automatic: every value carries its own tag, so a store can be
+    /// opened with any setting and still read everything correctly.
+    pub put_compression: Option<KvCompression>,
 }
 
 #[napi]
@@ -352,7 +351,7 @@ impl KvStore {
     /// Open (or create) a redb database file at the given path.
     #[napi(constructor)]
     pub fn new(path: String, options: Option<KvStoreOptions>) -> Result<Self> {
-        let (durability, max_queue, compression) = match options {
+        let (durability, max_queue, put_compression) = match options {
             Some(o) => (
                 match o.durability {
                     Some(KvDurability::None) => Durability::None,
@@ -360,7 +359,10 @@ impl KvStore {
                     Some(KvDurability::Immediate) | None => Durability::Immediate,
                 },
                 o.max_queue.unwrap_or(1024) as usize,
-                matches!(o.compression.unwrap_or(KvCompression::Lz4), KvCompression::Lz4),
+                matches!(
+                    o.put_compression.unwrap_or(KvCompression::Lz4),
+                    KvCompression::Lz4
+                ),
             ),
             None => (Durability::Immediate, 1024, true),
         };
@@ -369,7 +371,7 @@ impl KvStore {
         let shared = Arc::new(SharedDb {
             db: Mutex::new(Some(Arc::new(db))),
             durability,
-            compression,
+            put_compression,
         });
 
         let (sender, receiver) = sync_channel(max_queue.max(1));
@@ -457,9 +459,7 @@ impl KvTable {
         let key_slice: &[u8] = &key;
 
         match table.get(key_slice).map_err(to_napi_err)? {
-            Some(v) => Ok(Some(Buffer::from(
-                decode_value(self.shared.compression, v.value()).map_err(to_napi_err)?,
-            ))),
+            Some(v) => Ok(Some(Buffer::from(decode_value(v.value()).map_err(to_napi_err)?))),
             None => Ok(None),
         }
     }

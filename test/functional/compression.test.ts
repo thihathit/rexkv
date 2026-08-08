@@ -5,9 +5,10 @@ import type { KvCompression } from "rexkv";
 import { KvStore, tempDbPath } from "./native.ts";
 
 const lz4 = "lz4" as KvCompression;
+const none = "none" as KvCompression;
 
 test("lz4: put/get round-trips a compressible value", async () => {
-  const kv = new KvStore(tempDbPath(), { compression: lz4 });
+  const kv = new KvStore(tempDbPath(), { putCompression: lz4 });
   const t = kv.openTable("kv");
   const value = Buffer.from(JSON.stringify({ body: "x".repeat(4096) }));
   await t.put(Buffer.from("a"), value);
@@ -16,7 +17,7 @@ test("lz4: put/get round-trips a compressible value", async () => {
 });
 
 test("lz4: small and incompressible values still round-trip", async () => {
-  const kv = new KvStore(tempDbPath(), { compression: lz4 });
+  const kv = new KvStore(tempDbPath(), { putCompression: lz4 });
   const t = kv.openTable("kv");
   await t.put(Buffer.from("small"), Buffer.from("hi"));
   const binary = Buffer.from(Array.from({ length: 1024 }, () => Math.floor(Math.random() * 256)));
@@ -27,7 +28,7 @@ test("lz4: small and incompressible values still round-trip", async () => {
 });
 
 test("lz4: putBatch + getBatch round-trip", async () => {
-  const kv = new KvStore(tempDbPath(), { compression: lz4 });
+  const kv = new KvStore(tempDbPath(), { putCompression: lz4 });
   const t = kv.openTable("kv");
   const values = Array.from({ length: 50 }, (_, i) =>
     Buffer.from(JSON.stringify({ i, body: "y".repeat(2048) })),
@@ -38,26 +39,73 @@ test("lz4: putBatch + getBatch round-trip", async () => {
   await kv.close();
 });
 
-test("lz4: data survives reopening with the same mode", async () => {
+test("reads use each value's tag: a store can be reopened with any mode", async () => {
   const path = tempDbPath();
   const expected = JSON.stringify({ body: "z".repeat(4096) });
   {
-    const kv = new KvStore(path, { compression: lz4 });
+    const kv = new KvStore(path, { putCompression: lz4 });
     const t = kv.openTable("kv");
     await t.put(Buffer.from("a"), Buffer.from(expected));
     await kv.close();
   }
   {
-    const kv = new KvStore(path, { compression: lz4 });
+    const kv = new KvStore(path, { putCompression: none });
+    const t = kv.openTable("kv");
+    assert.equal(t.get(Buffer.from("a"))?.toString(), expected);
+    const out = await t.getBatch([Buffer.from("a")]);
+    assert.equal(out[0]?.toString(), expected);
+    await kv.close();
+  }
+});
+
+test("reads use each value's tag: writing with none, reading with lz4", async () => {
+  const path = tempDbPath();
+  const expected = JSON.stringify({ body: "w".repeat(4096) });
+  {
+    const kv = new KvStore(path, { putCompression: none });
+    const t = kv.openTable("kv");
+    await t.put(Buffer.from("a"), Buffer.from(expected));
+    await kv.close();
+  }
+  {
+    const kv = new KvStore(path, { putCompression: lz4 });
     const t = kv.openTable("kv");
     assert.equal(t.get(Buffer.from("a"))?.toString(), expected);
     await kv.close();
   }
 });
 
-test("default compression is lz4: compressible data shrinks the db file", async () => {
+test("reads use each value's tag: a single file can hold both formats", async () => {
+  const path = tempDbPath();
+  const a = JSON.stringify({ body: "a".repeat(4096) });
+  const b = JSON.stringify({ body: "b".repeat(4096) });
+  {
+    const kv = new KvStore(path, { putCompression: lz4 });
+    const t = kv.openTable("kv");
+    await t.put(Buffer.from("a"), Buffer.from(a));
+    await kv.close();
+  }
+  {
+    const kv = new KvStore(path, { putCompression: none });
+    const t = kv.openTable("kv");
+    await t.put(Buffer.from("b"), Buffer.from(b));
+    await kv.close();
+  }
+  {
+    const kv = new KvStore(path);
+    const t = kv.openTable("kv");
+    assert.equal(t.get(Buffer.from("a"))?.toString(), a);
+    assert.equal(t.get(Buffer.from("b"))?.toString(), b);
+    const out = await t.getBatch([Buffer.from("a"), Buffer.from("b")]);
+    assert.equal(out[0]?.toString(), a);
+    assert.equal(out[1]?.toString(), b);
+    await kv.close();
+  }
+});
+
+test("default putCompression is lz4: compressible data shrinks the db file", async () => {
   const write = async (path: string, compression?: KvCompression) => {
-    const kv = new KvStore(path, compression ? { compression } : {});
+    const kv = new KvStore(path, compression ? { putCompression: compression } : {});
     const t = kv.openTable("kv");
     const value = Buffer.from(JSON.stringify({ body: "x".repeat(4096) }));
     for (let i = 0; i < 400; i++) {
@@ -66,12 +114,12 @@ test("default compression is lz4: compressible data shrinks the db file", async 
     await kv.close();
     return statSync(path).size;
   };
-  const noneSize = await write(tempDbPath(), "none" as KvCompression);
+  const noneSize = await write(tempDbPath(), none);
   const defaultSize = await write(tempDbPath());
   assert.ok(defaultSize < noneSize, `default store wrote ${defaultSize}B vs ${noneSize}B for none`);
 });
 
-test("default compression is lz4: reopened with the default mode round-trips", async () => {
+test("default putCompression is lz4: reopened with the default mode round-trips", async () => {
   const path = tempDbPath();
   const expected = JSON.stringify({ body: "q".repeat(4096) });
   {
